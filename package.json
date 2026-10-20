@@ -1,17 +1,31 @@
 {
   "name": "dsh-bili-whale",
   "version": "0.2.0",
-  "description": "养一条有日子的鱼：让 DSH 里的 agent 自己刷 B 站、看懂视频、写两本日记，把值得的 @ 你。设置里有「养鱼」完整设置页（27 项）+ 依赖体检 + cookie 写入 + 共享配置（与工具链同一份 bili-whale.config.json）。",
+  "description": "【XunXi 寻汐 · 个人修改版，基于 Alterssss/dsh-bili-whale v0.2.0】把「看不看 / 发不发评论 / 发不发私信 / 怎么回复」都交给她自己决定，插件只设边界与防封号限制。原项目：https://github.com/Alterssss/dsh-bili-whale",
   "keywords": [
     "dsh",
     "dsh-plugin",
     "deepseek-harness",
     "bilibili",
     "agent",
-    "diary"
+    "diary",
+    "xunxi"
   ],
   "type": "module",
   "main": "lib/index.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/GUI-BEI/XunXi.git"
+  },
+  "homepage": "https://github.com/GUI-BEI/XunXi#readme",
+  "bugs": {
+    "url": "https://github.com/GUI-BEI/XunXi/issues"
+  },
+  "xunxi": {
+    "upstream": "https://github.com/Alterssss/dsh-bili-whale",
+    "upstreamAuthor": "Alterssss",
+    "basedOn": "v0.2.0"
+  },
   "exports": {
     ".": "./lib/index.js",
     "./client": "./lib/client.js",

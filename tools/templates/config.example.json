@@ -33,7 +33,8 @@
     "shareDaily": 3
   },
   "share": {
-    "enabled": true,
+    "canComment": true,
+    "canDm": true,
     "minScore": 13,
     "silentAfterDays": 3,
     "decayPerDay": 1
@@ -41,6 +42,8 @@
   "listen": {
     "comment": true,
     "commentIntervalSec": 300,
+    "dm": false,
+    "dmIntervalSec": 60,
     "scope": "both",
     "oncePerPerson": true,
     "allDay": true,
@@ -56,7 +59,6 @@
         "wakes": 1
       }
     ],
-    "skipChance": 0.3,
     "maxVideos": 5,
     "maxWakesPerDay": 1
   },

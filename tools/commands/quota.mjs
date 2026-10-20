@@ -32,10 +32,10 @@ const load = () => {
   return { ...DEFAULTS, log: Array.isArray(raw.log) ? raw.log : [] }
 }
 const save = (q) => { fs.mkdirSync(path.dirname(FILE), { recursive: true }); fs.writeFileSync(FILE, JSON.stringify({ log: q.log ?? [] }, null, 2) + '\n') }
-// ── 沉默衰减（2026-10-18 加，主人定）────────────────────────────────
-// 反馈的定义：**任何表态都算**（回她的评论 / 点赞 / 在微信里说一句 / 让她做点事…）
-// 都没有 = 沉默。沉默 ≥ silentAfterDays(3) 天开始扣：每天 -decayPerDay(1)，
-// 扣到 0 就停止分享；**但两本日记照常写**（那是她的日子，不是发言）。
+// ── 沉默衰减（2026-10-18 加，主人定；2026-10-20 放缓）──────────────
+// 反馈的定义：**任何表态都算**（回她的评论 / 点赞 / **发私信给她** / 在微信里说一句 / 让她做点事…）
+// 都没有 = 沉默。沉默 ≥ silentAfterDays(7) 天开始扣，扣到 silentStopDays(14) 天归零；
+// **但两本日记照常写**（那是她的日子，不是发言）。
 const FEEDBACK = path.join((process.env.USERPROFILE || process.env.HOME || '.'), '.bili-ai', 'feedback.json')
 const loadFeedback = () => { try { return JSON.parse(fs.readFileSync(FEEDBACK, 'utf8')) } catch { return { last: null, events: [] } } }
 const saveFeedback = (f) => { fs.mkdirSync(path.dirname(FEEDBACK), { recursive: true }); fs.writeFileSync(FEEDBACK, JSON.stringify(f, null, 2) + '\n') }
@@ -44,11 +44,10 @@ function silence() {
   const fb = loadFeedback()
   const base = fb.last ?? (q.log.find((x) => x.share)?.at ?? null)   // 没反馈过 → 从第一次分享算
   const days = base ? Math.floor((Date.now() - new Date(base).getTime()) / 86_400_000) : 0
-  const after = Number(config().share?.silentAfterDays ?? 3)     // 3 天开始衰减
-  const stopAt = Math.max(after + 1, Number(config().share?.silentStopDays ?? 7))  // 7 天完全停
+  const after = Number(config().share?.silentAfterDays ?? 7)     // 7 天开始衰减（2026-10-20 主人定）
+  const stopAt = Math.max(after + 1, Number(config().share?.silentStopDays ?? 14))  // 14 天完全停
   const baseCap = Number(q.shareDaily ?? 3)
-  // 2026-10-18 主人定：3 天开始降、**7 天降到 0**（不再是"扣到 0 为止"的算法 ✗）
-  //   day3=3 → day4=2 → day5=1 → day6=1 → day7+=0 ✓（线性降，不低于 1 直到第 7 天 ✓）
+  // 2026-10-20 主人定：7 天开始降、**14 天降到 0**（线性降，不低于 1 直到第 14 天 ✓）
   let cap
   if (days < after) cap = baseCap
   else if (days >= stopAt) cap = 0
@@ -84,7 +83,7 @@ if (cmd === 'status') {
   const usedAuto = q.log.filter((x) => dayOf(x.at) === today() && x.auto && !x.share).length
   const usedShare = q.log.filter((x) => dayOf(x.at) === today() && x.share).length
   console.log(`今日对外发言: 共 ${used} 条（**分享型** ${usedShare}/${q.shareDaily ?? 3} · 自主发言不设条数上限 ✓ · 主人授权 ${used - usedAuto - usedShare} 条）   日期 ${today()}`)
-  console.log(`缰绳：分享 ≤${q.shareDaily ?? 3}/天 · 评分卡 ≥${config().share?.minScore ?? 13}/20 · 同一视频 7 天一次 · 署名复核 · 事后报备`)
+  console.log(`缰绳（硬的只有两条）：分享 ≤${q.shareDaily ?? 3}/天 · 同一个视频、同一种渠道 7 天一次 · 事后报备；标尺（参考线 ${config().share?.minScore ?? 13}/20）只是建议 ✓`)
   console.log(`已删除（2026-10-18 主人定）：白名单 ✗ · 「自主 N 条」独立额度 ✗`)
   const recent = q.log.slice(-5)
   console.log(recent.length ? '最近记录:' : '最近记录: (无)')
@@ -118,18 +117,23 @@ if (cmd === 'check') {
       process.exit(2)
     }
     if (target) {
-      const dup = q.log.find((x) => x.share && String(x.target ?? '') === target && Date.now() - new Date(x.at).getTime() < SEVEN)
+      // 2026-10-20：判重按**渠道**算 —— 她把同一条视频"又评论又私信"是合法的（两条通道各一次 ✓），
+      //   所以同一个 target 只要 type 不同就不算重复；额度那条（上面 shareDaily）依旧是两渠道合起来算 ✓
+      const dup = q.log.find((x) => x.share && String(x.target ?? '') === target
+        && String(x.type ?? '') === String(opt.type ?? '')
+        && Date.now() - new Date(x.at).getTime() < SEVEN)
       if (dup) {
-        console.log(`✗ 这个视频 7 天内已经分享过了：${dup.at}（${dup.target}）`)
+        console.log(`✗ 这个视频 7 天内已经用「${dup.type}」分享过了：${dup.at}（${dup.target}）—— 换个方式（另一条通道）还行`)
         process.exit(2)
       }
     }
-    console.log(`✓ 分享额度内（${usedShare}/${shareDaily}）${target ? `，target=${target}` : ''} —— 分享型不看白名单，但同一视频 7 天内只能一次`)
+    console.log(`✓ 分享额度内（${usedShare}/${shareDaily}）${target ? `，target=${target}` : ''} —— 分享型不看白名单；同一个视频、同一种渠道 7 天内只能一次（换个渠道可以 ✓）`)
     process.exit(0)
   }
   // 语义（2026-10-14 定；**2026-10-18 简化**：删除「自主 2 条」这个独立额度 ✗ —— 主人定：基本没用 ✓）
-  //   现在的缰绳只有这些：分享型 ≤shareDaily/天（上面那条分支 ✓）· 评分卡 · 同一视频 7 天一次 · 事后报备。
-  //   **非分享**的自主发言**不再设每日条数额度** —— 但仍必须 dry→go→署名复核→报备主人 ✓
+  //   现在的缰绳只有这些：分享型 ≤shareDaily/天（上面那条分支 ✓）· 同一视频同渠道 7 天一次 · 事后报备。
+  //   2026-10-20：**评分卡（标尺）不再是闸门** —— 降级成建议（评论是她的自由 ✓），这里只留防封号的硬限制。
+  //   **非分享**的自主发言**不再设每日条数额度** —— 但仍必须 dry→go→复核→报备主人 ✓
   //   （`--auto` 依旧要带：它标记"这是她自己决定说的"，影响的是**报备与审计**，不是额度 ✓）
   if (!auto) {
     console.log('（非自主发言：不拦截）主人授权的发言不受限，但照旧 dry→go→复核')
@@ -174,6 +178,25 @@ if (cmd === 'react' && opt.auto) {
       const o = JSON.parse(js)
       if (Number(o.ownerLiked ?? 0) > 0) found.push(`点赞×${o.ownerLiked}`)
     } catch { /* 同上 */ }
+    // ③ 主人私信（2026-10-20 加）：他发私信给她，同样算"她知道自己被回应了" ✓
+    //   只读会话列表，不动 dm-await 的 lastSeen（那条状态归私信监听用 ✓）
+    try {
+      const cred = JSON.parse(fs.readFileSync(path.join(process.env.USERPROFILE || process.env.HOME || '/', '.bili-ai', 'credentials.json'), 'utf8'))
+      const u = 'https://api.vc.bilibili.com/session_svr/v1/session_svr/get_sessions?session_type=1&group_id=0&count=20&mobi_app=web'
+      const j = await (await fetch(u, {
+        headers: {
+          'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+          referer: 'https://www.bilibili.com/',
+          cookie: `SESSDATA=${cred.sessdata}; bili_jct=${cred.bili_jct}; buvid3=${cred.buvid3}`,
+        },
+      })).json()
+      const ownerMid = String(config().owner?.mid ?? '')
+      const mine = (j.data?.session_list ?? []).find((s) => String(s.talker_id) === ownerMid)
+      const ts = Number(mine?.last_msg?.timestamp ?? 0)
+      if (ownerMid && ts && String(mine?.last_msg?.sender_uid) === ownerMid && Date.now() / 1000 - ts <= Number(hours) * 3600) {
+        found.push('私信')
+      }
+    } catch { /* 私信接口失败不影响前两路 */ }
     if (found.length) {
       const fb = loadFeedback()
       fb.last = new Date().toISOString()
@@ -181,12 +204,15 @@ if (cmd === 'react' && opt.auto) {
       saveFeedback(fb)
       console.log(`✓ 自动识别到主人的表态（${found.join(' / ')}）→ 已记一次反馈（沉默清零）`)
     } else {
-      console.log(`（近 ${hours} 小时：没有主人的回复，也没有主人的点赞）—— 沉默继续累计`)
+      console.log(`（近 ${hours} 小时：没有主人的回复，没有点赞，也没有私信）—— 沉默继续累计`)
       console.log('  ⚠️ 跨端表态（微信/桌面…）这边看不见 → 需要收到的那一端当场 `quota react --note "…"`')
     }
   } catch (e) {
     console.log('自动识别失败：' + String(e.message).slice(0, 160))
   }
+  // ⚠️ 这里是文件中间（后面还有别的子命令分支）→ 必须真的停住；
+  //   但刚 fetch 完就 process.exit() 在 Windows 上会触发 libuv 断言，所以等一拍再退 ✓
+  await new Promise((r) => setTimeout(r, 200))
   process.exit(0)
 }
 
@@ -197,6 +223,7 @@ if (cmd === 'react') {
   saveFeedback(fb)
   const sil = silence()
   console.log(`已记一次反馈（现在沉默 0 天）· 分享上限回到 ${sil.cap}`)
+  await new Promise((r) => setTimeout(r, 200))
   process.exit(0)
 }
 

@@ -3,6 +3,8 @@
 //   ② 只发给配置里的 owner.mid（同一个用户，别处发不出去）
 //   ④ **带 --share 时占「分享 3 条/天」的额度**（与评论区 @ 共用同一本账 ✓；不带则只是推送，不占额度）
 //   ③ 必须互关（relation.attribute === 6），否则拒发
+//   ⑤ **权限**（2026-10-20 加）：设置里「允许私信」关掉 → 这条通道整条关闭（含 notify 的私信推送）；
+//      开着的时候**发不发由她自己决定** ✓（家长式：你设边界，她做选择）
 //
 // 为什么写死：私信是 B站 风控最凶的接口（判营销/骚扰），而我们要的只是
 // "把一条分享私密地送到主人手里"，不是群发工具 ✗ 所以能力越窄越安全 ✓
@@ -110,9 +112,20 @@ if (STATUS) {
 
 if (!MSG) { console.error('用法: node dm.mjs --msg "…" [--share --target BV…] --dry|--go   |   --status'); process.exit(2) }
 
+// ── 权限闸（2026-10-20 主人定）────────────────────────────────────────────
+// 设置页「允许私信」= 家长给的**边界**（能不能做），「发不发」= 她自己决定 ✓
+// ⚠️ 关掉它，推送方式「B站私信」也会跟着发不出去（同一条通道，插件里没有第二条私信路）
+if (cfg.share?.canDm === false) {
+  console.error('✗ 主人把「允许私信」关掉了（设置 → 养鱼 → 允许私信）→ 私信这条通道现在是关的')
+  console.error('  能做的照旧：筛 / 读 / 写日记；评论那条通道看「允许评论」开没开 —— 发不发依旧你自己定')
+  process.exit(3)
+}
+
 // ── 闸门（写死，不接受参数覆盖）──────────────────────────────────────
 if (!OWNER) { console.error('✗ 配置里 owner.mid 为空 —— 私信只发给主人，没配就不发'); process.exit(2) }
-if (MSG.length > 300) { console.error(`✗ 私信太长（${MSG.length} > 300 字），退化成刷屏了 ✗`); process.exit(2) }
+// 2026-10-20：上限 300 → **500 字**（主人定），而且**表情可以用**（Unicode emoji 直接发；
+//   `[笑哭]` 这种站内表情名也照原样发，B站 前端会渲染成图 ✓ 脚本不再拦表情）
+if (MSG.length > 500) { console.error(`✗ 私信太长（${MSG.length} > 500 字），退化成刷屏了 ✗`); process.exit(2) }
 
 const meInfo = await me()
 if (String(meInfo.mid) === ONLY_TO) { console.error('✗ 不能给自己发私信'); process.exit(2) }
@@ -140,7 +153,7 @@ console.log(`  互关 ✓  ·  今天第 ${used + 1} 条（条数不限 ✓ 锁�
 if (DRY) { console.log('  [dry] 未发送 ✓ 确认后把 --dry 换成 --go'); process.exit(0) }
 if (!GO) { console.error('✗ 必须给 --dry 或 --go'); process.exit(2) }
 
-// ④ 分享型先过闸（日上限 / 同一视频 7 天一次 / 评分卡 …由 quota 统一管 ✓）
+// ④ 分享型先过闸（日上限 / 同一视频 7 天一次 …由 quota 统一管 ✓；标尺只是建议，不拦 ✓）
 if (SHARE) {
   const ok = gate({ type: 'dm', target: SHARE_TARGET, auto: true, share: true })
   if (!ok) { console.error('✗ 分享额度不允许（见上面的 [限额闸] 输出）'); process.exit(4) }
@@ -150,7 +163,9 @@ if (r.code === 0) {
   saveQ({ date: today(), count: used + 1, mid: ONLY_TO, at: new Date().toISOString() })
   if (SHARE) record({ type: 'dm', target: SHARE_TARGET, note: MSG.slice(0, 40), auto: true, share: true })
   console.log(`  ✓ 已发送（HTTP ${r.http}）${SHARE ? ' · 已记入分享额度 ✓' : ' · 推送不占额度 ✓'}`)
-  process.exit(0)
+  process.exitCode = 0
+} else {
+  console.error(`  ✗ 发送失败：HTTP ${r.http} code=${r.code} ${r.message ?? ''}`)
+  // ⚠️ 不用 process.exit()：刚 fetch 完就硬退，Windows 上会触发 libuv 断言（stdout 可能丢）
+  process.exitCode = 1
 }
-console.error(`  ✗ 发送失败：HTTP ${r.http} code=${r.code} ${r.message ?? ''}`)
-process.exit(1)

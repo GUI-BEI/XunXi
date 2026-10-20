@@ -78,46 +78,42 @@ if (!oid || (!bvid && !refererArg) || !message) {
 if (dry && go) { console.error('pick either --dry or --go, not both'); process.exit(2) }
 if (!dry && !go) { console.error('refusing to run without an explicit --dry or --go'); process.exit(2) }
 
-// --share（分享型）：正文里必须 @ 主人 —— 没写 @ 就自动补上。
-// 昵称取配置的 owner.name（space/wbi/acc/info 可能被风控，不实时查）；
-// 昵称改过的话，发完用 `thread` 看 `@到:` 就能发现（没解析出来就说明名字旧了）。
-// --share（分享型）—— 2026-10-17 严格化（Kimi 评审指出两个洞）：
-//   ① 必须与 --auto 同传：不然它就是"第三条自我声明车道"，绕开了自主发言那套判据
-//   ② 正文**必须以 @<配置里的主人昵称> 开头**：以前"含个 @"就算数 → 一条 "@任何人 快来买" 也能过闸 ✗
-if (SHARE) {
-  // 2026-10-18 接线：设置页「分享评论」的总开关（关掉 = 只看不说 ✓）
-  if (config().share?.enabled === false) {
-    console.error('分享已在设置里关闭（share.enabled = false）→ 这次不发（筛/深读/日记照常 ✓）')
-    process.exit(3)
-  }
-  if (!AUTO) { console.error('--share 必须与 --auto 同传（分享型也是"她自己决定说的"）'); process.exit(2) }
-  const ow = config().owner ?? {}
-  if (!ow.name) { console.error('--share 需要先配置 owner.name（要 @ 谁）'); process.exit(2) }
-  // ── 「标尺」（2026-10-18 加，Kimi 提议 + 主人认可）────────────────────
-  // 把"值不值"从感觉变成可审计的流程：
-  //   ① --reason  必填（白纸黑字写"为什么值得占用主人一次注意力"）
-  //   ② --score   必填且 ≥ config.share.minScore（默认 13 = 超过 12 分）
-  //   ③ --rank    只能是 1（当天深读里的第一名 —— 相对比较比绝对打分稳）
-  // 三项任一不过 → 拒绝发送；"今天没有值得发的"本身就是合法结果 ✓
-  {
-    const reason = String(args.get('reason') ?? '').trim()
-    if (reason.length < 8) { console.error('--share 必须带 --reason "为什么值得占用主人一次注意力"（≥8 字）'); process.exit(2) }
-    const minScore = Number(config().share?.minScore ?? 7)
-    const score = Number(args.get('score'))
-    if (!Number.isFinite(score) || String(args.get('score') ?? '') === '') { console.error(`--share 必须带 --score（每项 0-4，满 20；阈值 ${minScore}，超过 12 就发）`); process.exit(2) }
-    if (score < minScore) { console.error(`✗ 评分 ${score} < 阈值 ${minScore} → 这条不值得发（"今天没有值得发的"是合法结果）`); process.exit(2) }
-    const rank = Number(args.get('rank') ?? 1)
-    if (rank !== 1) { console.error('--share 只允许 --rank 1（当天深读里的第一名）'); process.exit(2) }
-    console.log(`[标尺] 分数 ${score}/20（阈值 ${minScore}：超过 12 就发）· 排名 #${rank} · 理由：${reason.slice(0, 60)}`)
-  }
+// ── 权限闸（2026-10-20 主人定）────────────────────────────────────────────
+// 设置页「允许评论」= 家长给的**边界**（能不能做）；
+// 「这次发不发、发哪条、要不要顺手也私信」= **她自己决定** ✓
+// 所以这里只有一道闸，而且**连 --dry 也拦**：没权限就直说，别让她白读一遍视频再发现发不出去
+if (config().share?.canComment === false) {
+  console.error('✗ 主人把「允许评论」关掉了（设置 → 养鱼 → 允许评论）→ 评论这条通道现在是关的')
+  console.error('  能做的照旧：筛 / 读 / 写日记；私信那条通道看「允许私信」开没开 —— 发不发依旧你自己定')
+  process.exit(3)
+}
 
-  const want = `@${ow.name}`
-  const body = String(message ?? '').trimStart()
-  if (!body.startsWith(want)) {
-    if (body.includes('@')) { console.error(`--share 的正文必须以 "${want}" 开头（里面那个 @ 不是主人）→ 拒绝发送`); process.exit(2) }
-    message = `${want} ${message}`
-    console.log(`[分享型] 正文没 @，已自动补：${want}`)
+// 「标尺」—— 2026-10-20 主人二次定：**降级成建议**，而且**评论格式完全自由** ✓
+//   为什么改：评论是她行使自由的地方。插件只该拦"会被封号的操作"（额度 / 风控 / 账号安全），
+//   不该替她决定"什么值得说、怎么说、要不要 @ 人" ✗
+//   → 这段现在只做三件事：① 给建议（可选参数没给就提一句）② 把她自己给的评分/理由打出来（她复盘用）
+//     ③ **一个字都不改她的正文**（以前会自动补 @前缀、会因为 @ 了别人而拒发 ✗ 全去掉）
+if (SHARE) {
+  const ow = config().owner ?? {}
+  const reason = String(args.get('reason') ?? '').trim()
+  const scoreRaw = args.get('score')
+  const scoreStr = String(scoreRaw ?? '').trim()
+  const score = scoreStr === '' ? null : Number(scoreStr)
+  const minScore = Number(config().share?.minScore ?? 13)
+  const rank = Number(args.get('rank') ?? 1)
+  const tips = []
+  if (!reason) tips.push('没带 --reason：以后想复盘可以顺手记一句"为什么值得说"（不记也能发 ✓）')
+  else if (reason.length < 8) tips.push(`--reason 只有 ${reason.length} 字（8 字以上更好复盘，不强求 ✓）`)
+  if (score === null) tips.push(`没带 --score：可以自己按标尺打个分（每项 0-4，满 20；参考线 ${minScore}）`)
+  else if (!Number.isFinite(score)) tips.push(`--score "${scoreStr}" 不是数字，已忽略`)
+  else if (score < minScore) tips.push(`你自己打的分是 ${score} < 参考线 ${minScore} —— 只是参考；你觉得值得发，就发 ✓`)
+  if (rank !== 1) tips.push(`--rank ${rank}：标尺原本建议只发当天第一名 —— 仅仅是建议 ✓`)
+  if (ow.name && !String(message ?? '').trimStart().startsWith(`@${ow.name}`)) {
+    tips.push(`正文没以 "@${ow.name}" 开头 —— B站 不会因此通知他；想让他收到 B站 通知就自己 @ 一下（怎么写随你 ✓）`)
   }
+  if (!ow.name) tips.push('配置里没有 owner.name，所以没法提示该 @ 谁（不影响发送 ✓）')
+  console.log('[标尺 · 建议] 这是防止账号被封的建议，但只是建议 —— 我相信你能正确行使评论的自由 ✓')
+  for (const t of tips) console.log('  · ' + t)
 }
 
 // "同一个人只回一条"（可选 · 2026-10-17 加）：只在二级回复（--root + --parent）时生效。
@@ -198,6 +194,34 @@ console.log(`  账号: ${nav.data.uname}   (mid ${nav.data.mid})`)
 console.log(`  手机绑定: ${nav.data.mobile_verified ? '是' : '否'}   硬币 ${nav.data.money}`)
 console.log('  ⚠️ 请确认这就是你的小号；若是主号，停手、换 cookie')
 
+// ── 表情（2026-10-20 加）：不再"只发纯文本" ─────────────────────────────
+//   B站 评论区两种表情都能发：
+//     ① Unicode emoji（😀🌙）—— 原样发，服务端存字符，前端渲染 ✓
+//     ② 站内表情名 `[笑哭]` / `[doge_金箍]` —— 原样发，B站 前端把它渲染成图 ✓
+//   这里只做一件事：拿官方表情面板核对站内表情名存不存在；不存在就提醒一句（会被当纯文本显示），**不拦** ✓
+async function emojiNoteOf(text) {
+  const s = String(text)
+  const uni = [...s.matchAll(/\p{Extended_Pictographic}/gu)].length
+  const names = [...new Set([...s.matchAll(/\[([^\[\]\s]{1,12})\]/g)].map((m) => m[1]))]
+  const bits = []
+  if (uni) bits.push(`Unicode emoji ×${uni}`)
+  if (!names.length) return bits.length ? `表情：${bits.join(' · ')}（原样发送 ✓）` : ''
+  let panel = null
+  try {
+    const j = await (await fetch('https://api.bilibili.com/x/emote/user/panel/web?business=reply', {
+      headers: { 'user-agent': UA, referer: 'https://www.bilibili.com/', cookie: cookieHeader },
+    })).json()
+    panel = new Set()
+    for (const p of j.data?.packages ?? []) for (const e of p.emote ?? []) panel.add(e.text)
+  } catch { /* 面板拿不到就只提示，不拦 */ }
+  const known = panel ? names.filter((n) => panel.has(`[${n}]`)) : names
+  const unknown = panel ? names.filter((n) => !panel.has(`[${n}]`)) : []
+  if (known.length) bits.push(`站内表情 ×${known.length}（${known.slice(0, 6).map((n) => `[${n}]`).join('')}${known.length > 6 ? '…' : ''}）`)
+  if (unknown.length) bits.push(`⚠️ 面板里没有：${unknown.map((n) => `[${n}]`).join('')}（会当纯文本显示）`)
+  return `表情：${bits.join(' · ')}${panel ? '' : '（表情面板没拉到，未核对）'}`
+}
+const emojiNote = await emojiNoteOf(message)
+
 const params = { type, oid: String(oid), message, plat: '1', csrf: String(cred.bili_jct) }
 if (root) params.root = String(root)
 if (parent) params.parent = String(parent)
@@ -213,7 +237,7 @@ console.log('  content-type: application/x-www-form-urlencoded')
 console.log('  headers: UA(Chrome 131) + referer=' + referer)
 console.log('  cookie : SESSDATA=***; bili_jct=***; buvid3=***   (已脱敏)')
 console.log('  body   : ' + body.replace(encodeURIComponent(String(cred.bili_jct)), '***csrf***'))
-console.log(`  正文长度 ${message.length} 字符（上限 1000）；oid=${oid}；emoji/表情需转义符，本脚本只发纯文本`)
+console.log(`  正文长度 ${message.length} 字符（上限 1000）；oid=${oid}${emojiNote ? '；' + emojiNote : ''}`)
 
 if (dry) {
   console.log('\n[dry] 未发送。确认文案与账号后，把 --dry 换成 --go 再跑一次。')
@@ -287,7 +311,9 @@ if (out.code === 0) {
   console.log(bvid
     ? `  https://www.bilibili.com/video/${bvid}/#reply${rpid}`
     : `  ${referer.replace(/\/$/, '')}#reply${rpid}`)
-  process.exit(0) // P0-6：成功
+  // ⚠️ 2026-10-20：这里不再 process.exit(0) —— 刚 fetch 完就硬退，Windows 上会触发
+  //   libuv 断言（stdout 可能丢）；改成 exitCode 让它自己退出 ✓
+  process.exitCode = 0
 } else {
   const hints = {
     '-101': '账号未登录：cookie 失效',
@@ -301,8 +327,7 @@ if (out.code === 0) {
     12002: '评论区已关闭',
   }
   if (hints[String(out.code)]) console.log(`  提示：${hints[String(out.code)]}`)
+  // P0-6（Kimi 评审 #6）：没发成功就给非 0 退出码，
+  // 否则 agent 会把「被风控拒了」当成「发成功了」，绕过了「撞风控立刻停手」的红线 ✗
+  process.exitCode = 6
 }
-
-// P0-6（Kimi 评审 #6）：走到这里 = 没发成功。给非 0 退出码，
-// 否则 agent 会把「被风控拒了」当成「发成功了」，绕过了「撞风控立刻停手」的红线 ✗
-process.exit(6)

@@ -1,5 +1,49 @@
 # 更新日志
 
+## XunXi 分支（2026-10-20，基于上游 v0.2.0）
+
+> ⚠️ 这是**个人修改版**。原项目：[Alterssss/dsh-bili-whale](https://github.com/Alterssss/dsh-bili-whale)（作者 **Alterssss**）。
+> 下面的条目**不是**上游的发布内容，只存在于本仓库。
+
+### 一、把选择权交给她（上游是插件决定）
+
+- **看不看不再掷骰子**：删掉 `night.skipChance`；醒来后她自己定。
+  新增 `bili.mjs night decide --skip [--reason "…"] --wake none|all|2,4|--think`
+  —— 「不看」时会**追问今天后面几次还叫不叫她**，说"别叫"的那几次直接跳过、不唤醒她（`veto` / `vetoedSlots`，改主意能还回来）；`--reason` 可选。
+- **评论 / 私信不再是二选一**：`share.via` → `share.canComment` / `share.canDm` 两个权限开关（含旧配置自动迁移）。
+  代码里只剩"能不能做"，做不做由她定；`comment.mjs` / `dm.mjs` 入口各有一道权限闸（连 `--dry` 也拦，先告诉她没权限）。
+- **「标尺」降级为建议**：评分/理由/rank 不再拦发送；正文不再被自动补 `@`、不再因为 @ 了别人而拒发。
+  发评论时会打一行：`[标尺 · 建议] 这是防止账号被封的建议，但只是建议 —— 我相信你能正确行使评论的自由`。
+- **回复别人由她定**：删掉"其他人必须写草稿待审"的硬流程；建议 `notify` 报备即可（`reply-draft` 保留为她的可选工具）。
+- **已读不回记号**：新增 `bili.mjs mark seen [--note "…"]` / `mark list` —— 写 `~/.dsh/whale-seen.json`，不走 B 站；设置页顶部显示"她最近一次已读不回"，用来区分"她不想说话"与"插件挂了"。
+
+### 二、节奏与风控
+
+- **沉默衰减放缓**：`silentAfterDays` 3 → **7**、`silentStopDays` 7 → **14**；`quota react --auto` 新增第三路：**主人发私信也算表态**（只读会话列表，不动私信监听的 lastSeen）。
+- **私信轮询**：20 秒 → 默认 **60 秒**（`listen.dmIntervalSec`，下限 20）；修掉插件重载时 `timerDm` / `timerAuth` 未清理的泄漏。
+- **私信长度**：300 → **500 字**。
+- **表情支持**：Unicode emoji 原样发；站内表情 `[笑哭]` 用官方表情面板（`x/emote/user/panel/web?business=reply`）核对，未知名只提醒不拦。
+
+### 三、新增：登录态管理
+
+- `bili.mjs login`：报 SESSDATA 上限 / 剩余天数，并真去 `nav` 验一次（退出码 3 = 需要重新登录）。
+- `bili.mjs login import`：整段粘贴（Cookie 头 / JSON / URL query / DevTools 表格）自动拆出 `SESSDATA` / `bili_jct` / `buvid3`，**验过才写**，旧文件备份 `.bak`。
+- 宿主每 6 小时自检登录态，失效推一次（12 小时最多一次）+ 写 `whale-log.jsonl`（`auth-expired`）。
+
+### 四、修复
+
+- **Desktop 版 DSH 找不到 node.exe**：`findNode()` 补 `PATH` / `%ProgramFiles%\nodejs` 候选；子进程统一带 `ELECTRON_RUN_AS_NODE=1`；`deps` 结果为空时补一条诊断项（node 路径 / exit / stdout / stderr）。
+- **Windows 上 fetch 完 `process.exit()` 触发 libuv 断言**（stdout 可能丢）：`deps` / `login` / `comment` / `dm` / `likes` / `quota react` 改为 `exitCode` 或等一拍再退。
+- **`quota react` 同进程连跑两遍**会把"自动识别"和"手动记账"都执行 → 误记一次主人表态；已修。
+- **设置页 cookie 支持整段粘贴**（宿主 `/api/cookie` 就地拆字段），按钮不再要求两栏都填。
+- `deps` 的网络失败曾被误报成"没有凭据文件"（一个 catch 包住了读文件和请求）—— 已拆开。
+
+### 五、文档
+
+- README 顶部加显著声明：本项目是 **Alterssss/dsh-bili-whale** 的个人修改版、基线 v0.2.0、上游已到 v0.3.0、许可证与原作者版权声明保留。
+
+---
+
 ## v0.2.0 —— 私信版（2026-10-19）
 
 > 这一版的主题：**给她一条"只对你说话"的通道**。

@@ -1,29 +1,36 @@
-// 这条鱼的「生物钟」—— 决定今天醒几次、什么时候醒、醒来看不看，到点**退出**来叫醒她。
+// 这条鱼的「生物钟」—— 决定今天醒几次、什么时候醒，到点**退出**来叫醒她。
 //
 // 为什么用"退出"叫醒：后台任务没法给 agent 注入一个回合 ✗，但它**结束**时系统会通知 agent ✓
 // —— 跟直播间 `danmaku await` 是同一个套路（已在实战验证过）。
 //
 // 用法:
-//   node whale-night.mjs plan      掷骰子，生成今天的计划（写 ~/.dsh/whale-night.json + 事件）
-//   node whale-night.mjs clock     常驻：算计划 → 到点退出（WHALE_WAKE）/ 不看则睡到该窗口末退出（WHALE_SKIP）/ 次数用完（WHALE_DONE）
+//   node whale-night.mjs plan      生成今天的计划（写 ~/.dsh/whale-night.json + 事件）
+//   node whale-night.mjs clock     常驻：算计划 → 到点退出（WHALE_WAKE）/ 次数用完（WHALE_DONE）
+//   node whale-night.mjs decide --skip [--reason "…"] --wake none|all|2,3|--think
+//                                  --reason 可选（2026-10-20 主人定：她不喜欢被要求解释理由 ✓）
+//                                  她自己决定「这次不看」，并顺带安排今天**后面几次**要不要叫醒她
+//   node whale-night.mjs decide --watch | decide --wake all
+//                                  她自己决定「看」/ 临时改主意（取消"别叫"）
 //   node whale-night.mjs mark      写"今晚醒过"的标记（给 Windows 计划任务兜底用：DSH 关着时也能留痕）
-//   node whale-night.mjs status    看配置 / 今天的计划 / 醒了几次 / 兜底标记
+//   node whale-night.mjs status    看配置 / 今天的计划 / 剩余唤醒机会 / 她说过别叫的那几次
 //   node whale-night.mjs clock --test [秒]   自测：不走配置窗口，几秒后退出叫醒
 //
-// 配置（~/.dsh/whale-night.config.json，缺字段用默认值）：
+// 配置（~/.dsh/bili-whale.config.json 的 night 段，缺字段用默认值）：
 //   {
-//     "windows": [ {"start":"07:00","end":"09:00"}, {"start":"17:00","end":"18:00"} ],
+//     "windows": [ {"start":"07:00","end":"09:00","wakes":1}, {"start":"17:00","end":"18:00","wakes":1} ],
 //     "maxWakesPerDay": 2,
-//     "skipChance": 0.3,
-//     "maxVideos": 5, "maxMinutes": 20
+//     "maxVideos": 5
 //   }
 //   兼容旧配置：没有 windows 时，用 windowStart/windowEnd 当成"一个窗口"。
 //
-// 设计原则（2026-10-14 起，2026-10-17 扩成多窗口）：
+// 设计原则（2026-10-14 起，2026-10-17 扩成多窗口，2026-10-20 改"看不看"）：
 //   · **窗口固定，时刻随机** —— 机器才准点 ✗。每个窗口内随机挑一个时刻。
 //   · **窗口 = 一次醒来的机会**，但**每天合计 ≤ maxWakesPerDay**（默认 = 窗口数，硬上限 3）——
 //     窗口可以设四个，但不能醒四次（每次醒来都是一笔真开销）。
-//   · **有权利不看** —— 每次醒来独立掷 skipChance（默认 30%），"今天不想看"也是活人 ✓
+//   · **看不看，她自己定**（2026-10-20 主人定）—— 不再掷 skipChance 骰子 ✗。
+//     而且「看不看」和「要不要被叫醒」**绑在一起**：她这一次说不想看 → 顺带回答今天后面几次还叫不叫她；
+//     说"别叫"的那几次直接跳过、不唤醒她（免得吵醒她只为了问一句"看不看"）；说"叫"或者"还要想"的就叫醒。
+//     任何时候都能改主意（`decide --watch` / `decide --wake all`）✓
 //   · **有上限** —— 条数 + 分钟数写死在配置里，防烧白饭。
 import fs from 'node:fs'
 import path from 'node:path'
@@ -75,36 +82,78 @@ const MAX_WAKES = Math.min(
 
 const st = load(STATE, {})
 const wakesToday = (s) => (s.date === today() ? Number(s.wakes ?? 0) : 0)
+// 2026-10-20：旧状态文件只记了 wakes、没记 usedCount（上一版把 done 写成 { date, action, wakes, reason }）
+//   → 直接读会得到"今天还剩几次"的错数 ✗。这里按"前 N 次机会已经用掉"把它还原出来 ✓
+const usedOf = (s) => {
+  if (s.date !== today()) return {}
+  if (s.usedCount && typeof s.usedCount === 'object') return { ...s.usedCount }
+  const n = Math.max(0, Number(s.wakes ?? 0))
+  const used = {}
+  for (const x of DAY_SLOTS.slice(0, n)) used[x.label] = (used[x.label] ?? 0) + 1
+  return used
+}
+const sumUsed = (used) => Object.values(used).reduce((a, b) => a + Number(b || 0), 0)
+const vetoOf = (s) => (s.date === today() && Array.isArray(s.veto) ? s.veto.map(Number) : [])
+const vetoedSlotsOf = (s) => (s.date === today() && Array.isArray(s.vetoedSlots) ? s.vetoedSlots.map(Number) : [])
 
-function makePlan() {
+// 今天所有"唤醒机会"，编号固定 —— **#N = 今天的第 N 次唤醒**（按窗口先后、每个窗口 wakes 次）
+// 编号与"现在几点"无关：她回答时用的 #2/#3，过几分钟再排也还是同一趟 ✓
+const DAY_SLOTS = (() => {
+  const out = []
+  for (const w of [...WINDOWS].sort((a, b) => a.start - b.start)) {
+    for (let i = 1; i <= w.wakes; i += 1) out.push({ ordinal: out.length + 1, label: w.label, nth: i, of: w.wakes })
+  }
+  return out
+})()
+
+/**
+ * 今天还剩哪些"唤醒机会"（窗口没过完 + 该窗口里那一趟还没用掉）。
+ * 2026-10-20 主人定：「看不看」和「要不要被叫醒」绑在一起 ——
+ *   她这一次选择不看之后，要顺带安排今天后面几次还叫不叫她 ✓
+ */
+function remainingSlots(s = st) {
+  const used = usedOf(s)
   const now = nowMin()
-  const done = wakesToday(st)
-  if (MAX_WAKES === 0) return { date: today(), action: 'done', wakes: done, reason: '所有窗口的"醒来次数"都是 0 → 今天不醒' }
-  if (done >= MAX_WAKES) return { date: today(), action: 'done', wakes: done, reason: `今天已经醒了 ${done} 次（上限 ${MAX_WAKES}）` }
-  // 还没结束的窗口
-  const open = WINDOWS.filter((w) => w.end > now)
-  if (!open.length) return { date: today(), action: 'done', wakes: done, reason: '今天的窗口都过完了' }
-  // 每个窗口能醒 w.wakes 次；用 usedCount 记今天每个窗口已经用掉几次（2026-10-18 修：以前一个窗口只能用一次 ✗）
-  const usedCount = st.date === today() && st.usedCount && typeof st.usedCount === 'object' ? { ...st.usedCount } : {}
-  const byUsed = (list) => list.filter((w) => (usedCount[w.label] ?? 0) < w.wakes)
-  let pool = byUsed(open)
-  if (!pool.length) return { date: today(), action: 'done', wakes: done, reason: '所有窗口的醒来次数都用完了' }
-  const w = pool[Math.floor(Math.random() * pool.length)]
-  usedCount[w.label] = (usedCount[w.label] ?? 0) + 1
-  const withinWindow = `${w.label} 第 ${usedCount[w.label]}/${w.wakes} 次`
+  return DAY_SLOTS.filter((x) => {
+    const w = WINDOWS.find((v) => v.label === x.label)
+    return !!w && w.end > now && (used[x.label] ?? 0) < x.nth
+  })
+}
 
-  if (Math.random() < Number(cfg.skipChance ?? 0.3)) {
+function makePlan(base = st) {
+  const now = nowMin()
+  const done = wakesToday(base)
+  const used = usedOf(base)
+  const veto = vetoOf(base)
+  const vetoedSlots = vetoedSlotsOf(base)
+  // ⚠️ 2026-10-20：done 也要带上 usedCount/veto/vetoedSlots —— 否则状态一变成 done 就
+  //   "忘了今天用掉几次 / 吃过哪几趟"，她在同一天再跑 decide 会看到错的"还剩几次" ✗
+  const doneState = (reason) => ({ date: today(), action: 'done', wakes: done, usedCount: used, veto, vetoedSlots, reason })
+  if (MAX_WAKES === 0) return doneState('所有窗口的"醒来次数"都是 0 → 今天不醒')
+  if (done >= MAX_WAKES) return doneState(`今天已经醒了 ${done} 次（上限 ${MAX_WAKES}）`)
+  // 每次占一个"唤醒机会"：她说别叫的那几次直接吃掉（记进 vetoedSlots，改主意时能还回来 ✓）
+  for (let guard = 0; guard < 64; guard += 1) {
+    const rem = remainingSlots({ date: today(), usedCount: used })
+    if (!rem.length) return doneState(vetuReason(veto) ?? '今天的窗口/次数都用完了')
+    const s = rem[0]                                        // 最早的窗口先排（比随机更适合"连排几次"）
+    used[s.label] = (used[s.label] ?? 0) + 1
+    if (veto.includes(s.ordinal)) { vetoedSlots.push(s.ordinal); continue }   // 她说过别叫 → 吃掉，但不排
+    const w = WINDOWS.find((x) => x.label === s.label) ?? WINDOWS[0]
+    let at = w.start + Math.floor(Math.random() * Math.max(1, w.end - w.start))
+    if (at <= now) at = Math.min(w.end - 1, now + 1 + Math.floor(Math.random() * 10))
     return {
-      date: today(), action: 'skip', wakes: done, usedCount, window: w.label, endAt: w.end, withinWindow,
-      reason: `这次不想看（掷骰子掷到了「不看」那 ${Math.round((Number(cfg.skipChance ?? 0.3)) * 100)}%）`,
+      date: today(), action: 'wake', at, atText: hhmm(at), wakes: done, usedCount: used,
+      window: s.label, withinWindow: `${s.label} 第 ${s.nth}/${s.of} 次`, atOrdinal: s.ordinal,
+      veto, vetoedSlots, roll: 'watch', decision: 'pending', maxVideos: cfg.maxVideos ?? 5, createdAt: new Date().toISOString(),
     }
   }
-  let at = w.start + Math.floor(Math.random() * Math.max(1, w.end - w.start))
-  if (at <= now) at = Math.min(w.end - 1, now + 1 + Math.floor(Math.random() * 10)) // 该窗口已开始 → 顺延一点点
-  return {
-    date: today(), action: 'wake', at, atText: hhmm(at), wakes: done, usedCount, window: w.label, withinWindow,
-    roll: 'watch', maxVideos: cfg.maxVideos ?? 5, createdAt: new Date().toISOString(),
-  }
+  return doneState('剩下的唤醒机会都被她自己取消了')
+}
+
+/** 给"排完了"写一句人话：能分辨出是被她取消的还是窗口过完了 */
+function vetuReason(veto) {
+  if (!veto.length) return null
+  return `今天剩下的唤醒机会她都说过别叫（#${veto.join('、#')}）`
 }
 
 function logEvent(kind, note) {
@@ -121,9 +170,92 @@ if (cmd === 'plan') {
   const p = makePlan()
   save(STATE, p)
   logEvent('night-plan', p.action === 'wake'
-    ? `今天 ${p.atText}（窗口 ${p.window}）看视频`
-    : `今天不看：${p.reason}`)
+    ? `今天 ${p.atText} 醒来（窗口 ${p.window}）· 看不看由她自己定`
+    : `不排了：${p.reason}`)
   console.log(JSON.stringify(p, null, 2))
+  process.exit(0)
+}
+
+if (cmd === 'decide') {
+  // 2026-10-20 主人定：**看不看由她自己定**，而且「看不看」和「要不要被叫醒」绑在一起 ✓
+  //   她这次选择不看 → 顺带安排今天**后面几次**还叫不叫她（不想看的那次干脆别吵醒她）：
+  //       --wake none   今天后面别叫了
+  //       --wake all    都叫（想看/想再想想）
+  //       --wake 2,4    只在第 2、4 次叫醒我
+  //       --think       下一次叫醒我，到时候再决定
+  //   不给答案 = 还没回答 → 把"还剩哪几次"列出来追问（这是设计，不是报错 ✓）
+  //   也可以随时改主意：decide --watch / decide --wake all
+  const skip = argv.includes('--skip')
+  const watch = argv.includes('--watch')
+  const think = argv.includes('--think')
+  const ri = argv.indexOf('--reason')
+  const reason = ri >= 0 ? String(argv[ri + 1] ?? '').trim() : ''
+  const wi = argv.indexOf('--wake')
+  const wakeArg = wi >= 0 ? String(argv[wi + 1] ?? '').trim().toLowerCase() : ''
+
+  const cur = load(STATE, {})
+  const rem = remainingSlots(cur)
+  const fmtSlots = (list) => list.map((s) => `#${s.ordinal}  ${s.label} 第 ${s.nth}/${s.of} 次`).join('\n')
+
+  if (!skip && !watch && !wakeArg && !think) {
+    console.error('用法:\n  decide --skip --wake none|all|2,3      （--reason "…" 可选：她不喜欢解释理由 ✓）\n  decide --skip --think\n  decide --watch            （改主意：今天剩下的都叫醒我）\n  decide --wake all         （只取消之前的"别叫"）')
+    process.exit(2)
+  }
+  // 2026-10-20 主人定：「不看」**可以不给理由** —— 她说了她不喜欢被要求解释 ✓
+  //   （以前这里强制 ≥4 字；现在 --reason 完全可选，给了才会记进事件流）
+
+  // 需要她回答"后面还要不要被叫醒"时：没答案就把剩下的次数摆出来（追问）
+  let wakeSet = null
+  if (skip) {
+    if (think) wakeSet = rem.length ? [rem[0].ordinal] : []
+    else if (wakeArg === 'none') wakeSet = []
+    else if (wakeArg === 'all') wakeSet = rem.map((s) => s.ordinal)
+    else if (wakeArg) wakeSet = wakeArg.split(/[,，\s]+/).map((x) => Number(String(x).replace('#', ''))).filter((n) => Number.isFinite(n))
+    if (wakeSet === null) {
+      if (!rem.length) wakeSet = []      // 今天没有更多机会了 → 不用问
+      else {
+        console.error(`今天还剩 ${rem.length} 次唤醒机会：\n${fmtSlots(rem)}\n`)
+        console.error('你这次不想看 —— 那今天后面这几次还叫醒你吗？回答一个：')
+        console.error('  --wake none      后面都别叫我（安静到明天）')
+        console.error('  --wake all       都叫（想接着看，或者到时候再想）')
+        console.error('  --wake 2,4       只在第 2、4 次叫醒我')
+        console.error('  --think          下一次叫醒我，我到时再决定')
+        process.exit(2)
+      }
+    }
+  }
+
+  // veto = 今天剩下的机会里，她明确说"别叫"的那些编号
+  const veto = skip ? rem.filter((s) => !wakeSet.includes(s.ordinal)).map((s) => s.ordinal) : []
+
+  // 2026-10-20：**改主意要能还回来** —— 上一轮因为她"别叫"而被吃掉的唤醒机会，
+  //   这次没被重新 veto 的，把 usedCount 还回去（她被叫醒过的次数不受影响 ✓）
+  const used = usedOf(cur)
+  const oldVetoed = vetoedSlotsOf(cur)
+  for (const o of oldVetoed) {
+    if (veto.includes(o)) continue
+    const s = DAY_SLOTS.find((x) => x.ordinal === o)
+    if (s) used[s.label] = Math.max(0, (used[s.label] ?? 0) - 1)
+  }
+
+  const decidedAt = new Date().toISOString()
+  // 立刻按她的回答重排（"叫"的那趟马上排上；全"别叫"就直接 done ✓）
+  const planned = makePlan({ ...cur, date: today(), usedCount: used, veto, vetoedSlots: [] })
+  const next = { ...planned, decision: skip ? 'skip' : 'watch', decidedAt, veto: planned.veto ?? veto }
+  if (skip && reason) next.decisionReason = reason   // 理由是可选的（她不喜欢被要求解释 ✓）
+  if (next.action !== 'done') next.reason = reason || next.reason
+  save(STATE, next)
+  logEvent('night-decision', skip
+    ? `这次不看${reason ? '：' + reason : '（没写理由）'}${rem.length ? ` · 今天还要被叫醒：${wakeSet.length ? wakeSet.map((n) => '#' + n).join('、') : '不叫（安静到明天）'}` : ''}`
+    : '今晚看（/ 改主意：后面都叫醒我）')
+  if (!argv.includes('--json')) {
+    console.log(skip
+      ? `记下了：这次不看${reason ? `（${reason}）` : ''}。今天剩下的 ${rem.length} 次唤醒里，会叫醒你的：${wakeSet && wakeSet.length ? wakeSet.map((n) => '#' + n).join('、') : '（没有了，安静到明天）'}`
+      : `记下了：今晚看${veto.length ? `（取消之前 ${veto.length} 次"别叫"）` : ''}`)
+    if (next.action === 'wake') console.log(`下一次叫醒：${next.atText}（${next.withinWindow}）`)
+    else if (next.action === 'done') console.log(`今天不再叫醒：${next.reason ?? ''}`)
+  }
+  console.log(JSON.stringify(next, null, 2))
   process.exit(0)
 }
 
@@ -137,10 +269,14 @@ if (cmd === 'status') {
   const p = load(STATE, {})
   const m = load(MARK, {})
   const done = wakesToday(p)
-  console.log(`配置: 窗口 ${winText()} | 今天最多醒 ${MAX_WAKES} 次 | 不看概率 ${Math.round(Number(cfg.skipChance ?? 0.3) * 100)}% | 一次初筛 ${cfg.maxVideos ?? 5} 条`)
+  console.log(`配置: 窗口 ${winText()} | 今天最多醒 ${MAX_WAKES} 次 | 看不看：她自己决定（不再掷骰子 ✓） | 一次初筛 ${cfg.maxVideos ?? 5} 条`)
   const uc = p.date === today() && p.usedCount && typeof p.usedCount === 'object' ? p.usedCount : {}
   const wdesc = WINDOWS.map((w) => `${w.label}×${w.wakes}${uc[w.label] ? `（已用 ${uc[w.label]}）` : ''}`).join(' · ')
   console.log(`今天已醒: ${done}/${MAX_WAKES} · 各窗口: ${wdesc || '(无)'}`)
+  const rs = remainingSlots(p)
+  const vt = vetoOf(p)
+  console.log(`今天还剩 ${rs.length} 次唤醒机会${rs.length ? '：' + rs.map((s) => `#${s.ordinal}(${s.label} 第 ${s.nth}/${s.of} 次)`).join(' ') : ''}`)
+  if (vt.length) console.log(`她自己说过别叫的：${vt.map((n) => '#' + n).join('、')}（会直接跳过、不吵她 ✓）`)
   console.log(`当前的计划: ${p.date ?? '(无)'} → ${p.action ?? '(未生成)'}${p.atText ? ' @ ' + p.atText : ''}${p.window ? '（窗口 ' + p.window + (p.withinWindow ? ' · ' + p.withinWindow : '') + '）' : ''}${p.reason ? '（' + p.reason + '）' : ''}`)
   console.log(`兜底标记: ${m.date ?? '(无)'}${m.date && m.date !== today() ? `  ← 有 ${m.date} 的标记（那晚 DSH 可能关着）` : ''}`)
   process.exit(0)
@@ -172,10 +308,11 @@ if (cmd === 'clock') {
   }
 
   if (p.action === 'skip') {
-    // 不看：睡到**这个窗口的**末，再退出 —— 退出同样会叫醒她，但醒来只需看一眼"这次不看"
+    // 2026-10-20：plan 已经不再产生 skip（看不看由她定 ✓）——
+    //   这一段只留给**旧状态文件 / 旧版计划任务**，别删（删了跨版本升级时会退化成"叫不醒"）
     const end = Number(p.endAt) || (WINDOWS[WINDOWS.length - 1]?.end ?? nowMin())
     const waitMin = Math.max(0, end - nowMin())
-    console.log(`[生物钟] 这次不看，${waitMin} 分钟后（窗口 ${p.window ?? ''} 末）退出`)
+    console.log(`[生物钟] 旧版「不看」计划：${waitMin} 分钟后退出（窗口 ${p.window ?? ''} 末）`)
     for (let i = 0; i < waitMin * 60; i += 60) await sleep(60_000)
     save(STATE, { ...p, done: true })
     console.log('WHALE_SKIP ' + (p.reason ?? ''))

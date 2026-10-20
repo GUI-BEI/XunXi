@@ -49,25 +49,23 @@ try {
 const ownerLiked = items.filter((it) => (it.users ?? []).some((u) => String(u.mid) === ownerMid))
 const fmt = (t) => new Date(Number(t) * 1000).toLocaleString('zh-CN', { hour12: false })
 
+// ⚠️ 2026-10-20：不再 process.exit() —— 刚 fetch 完就硬退，Windows 上会触发 libuv 断言
+//   （Assertion failed: !(handle->flags & UV_HANDLE_CLOSING)）；改成 if/else 让它自然退出 ✓
 if (JSONOUT) {
   console.log(JSON.stringify({ hours: HOURS, total: items.length, ownerLiked: ownerLiked.length, items }, null, 2))
-  process.exit(0)
-}
-
-if (ONLY_OWNER) {
+} else if (ONLY_OWNER) {
   if (ownerLiked.length) {
     console.log(`✓ 主人在近 ${HOURS} 小时赞了她 ${ownerLiked.length} 次：`)
     for (const it of ownerLiked) console.log(`  ${fmt(it.like_time)} · 共 ${it.counts} 赞 · ${it.item?.title ?? it.item?.business_id ?? ''}`)
   } else {
     console.log(`（近 ${HOURS} 小时主人没点赞${ownerName ? ` · 主人=${ownerName}` : ''}）`)
   }
-  process.exit(0)
-}
-
-console.log(`【收到的赞】近 ${HOURS} 小时 —— 共 ${items.length} 条通知`)
-for (const it of items.slice(0, 20)) {
-  const who = (it.users ?? []).map((u) => `${u.nickname}(mid ${u.mid})`).join(', ')
-  const mine = (it.users ?? []).some((u) => String(u.mid) === ownerMid) ? ' ⭐主人' : ''
-  console.log(`· ${fmt(it.like_time)}  共 ${it.counts} 赞  ← ${who}${mine}`)
-  if (it.item?.title) console.log(`    ${String(it.item.title).slice(0, 60)}`)
+} else {
+  console.log(`【收到的赞】近 ${HOURS} 小时 —— 共 ${items.length} 条通知`)
+  for (const it of items.slice(0, 20)) {
+    const who = (it.users ?? []).map((u) => `${u.nickname}(mid ${u.mid})`).join(', ')
+    const mine = (it.users ?? []).some((u) => String(u.mid) === ownerMid) ? ' ⭐主人' : ''
+    console.log(`· ${fmt(it.like_time)}  共 ${it.counts} 赞  ← ${who}${mine}`)
+    if (it.item?.title) console.log(`    ${String(it.item.title).slice(0, 60)}`)
+  }
 }

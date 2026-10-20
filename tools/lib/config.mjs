@@ -34,12 +34,33 @@ export const DEFAULTS = {
   // （acc/info 查询会风控，所以 name 缓存一份；改过就用 thread 的 `@到:` 验一下）
   owner: { mid: '', name: '' },
   quota: { shareDaily: 3 },
-  // 「标尺」（2026-10-18 加）：分享前必须打分，不到 share.minScore 就是"今天没有值得发的"（合法结果）
-  share: { enabled: true, via: 'comment', minScore: 13, silentAfterDays: 3, decayPerDay: 1 },  // 分享型（@主人）开关与评分阈值
+  // 「标尺」（2026-10-18 加）—— 2026-10-20 主人定：**降级成建议** ✓
+  //   评论是她的自由：minScore 只是"她打分时的一个参考线"，代码不再拿它拦任何东西
+  //   （防封号的硬限制只剩额度那两条：≤3/天 · 同一视频同渠道 7 天一次）
+  // 2026-10-20 主人定：「评论 / 私信二选一」拆成两个**权限**开关 —— canComment / canDm 只表示"她能不能做"，
+  //   **做不做、用哪种、要不要两个都做，由她自己决定** ✓（家长式：你设边界，她做选择）
+  // 2026-10-20 主人定：沉默衰减放缓 —— **7 天开始掉、14 天归零**（原来 3/7 太急）
+  //   而且"主人发私信给我"也算表态（quota react --auto 会查私信会话 ✓）
+  share: { canComment: true, canDm: true, minScore: 13, silentAfterDays: 7, silentStopDays: 14, decayPerDay: 1 },
   // 倾听（2026-10-18 补默认值，与设置页对齐）：评论区 + 直播间
-  listen: { comment: true, commentIntervalSec: 300, scope: 'both', oncePerPerson: false, allDay: false, dm: false, live: false, liveRoom: '', liveScope: 'owner' },
+  listen: { comment: true, commentIntervalSec: 300, dmIntervalSec: 60, scope: 'both', oncePerPerson: false, allDay: false, dm: false, live: false, liveRoom: '', liveScope: 'owner' },
   // 作息：windows[] = 每天允许醒来的时段（每个窗口 = 一次机会）；maxWakesPerDay 缺省 = 窗口数（硬上限 3）
-  night: { windows: [{ start: '20:00', end: '24:00', wakes: 1 }], skipChance: 0.3, maxVideos: 5 },
+  // 2026-10-20：去掉 skipChance —— **看不看由她自己定**，不再掷骰子 ✓
+  night: { windows: [{ start: '20:00', end: '24:00', wakes: 1 }], maxVideos: 5 },
+}
+
+/** 2026-10-20 迁移：旧版 share.via（二选一）/ share.enabled（总开关）→ 两个权限开关 */
+function migrateShare(cfg, user) {
+  const s = cfg.share ?? (cfg.share = {})
+  const u = user?.share ?? {}
+  const fresh = u.canComment === undefined && u.canDm === undefined
+  if (fresh) {
+    if (u.via === 'dm') { s.canComment = false; s.canDm = true }          // 旧设置：只私信
+    else if (u.via === 'comment') { s.canComment = true; s.canDm = false } // 旧设置：只评论
+  }
+  if (u.enabled === false) { s.canComment = false; s.canDm = false }      // 旧设置：分享总开关关掉
+  if (cfg.night && 'skipChance' in cfg.night && !user?.night?.skipChance) delete cfg.night.skipChance
+  return cfg
 }
 
 const merge = (base, over) => {
@@ -56,7 +77,7 @@ export function config() {
   if (cache) return cache
   let user = {}
   try { user = JSON.parse(fs.readFileSync(configPath, 'utf8')) } catch { /* 没配置就用默认 */ }
-  cache = merge(DEFAULTS, user)
+  cache = migrateShare(merge(DEFAULTS, user), user)
   cache.__hasUserFile = Object.keys(user).length > 0
   return cache
 }
