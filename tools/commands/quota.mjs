@@ -38,6 +38,21 @@ const save = (q) => { fs.mkdirSync(path.dirname(FILE), { recursive: true }); fs.
 // **但两本日记照常写**（那是她的日子，不是发言）。
 const FEEDBACK = path.join((process.env.USERPROFILE || process.env.HOME || '.'), '.bili-ai', 'feedback.json')
 const loadFeedback = () => { try { return JSON.parse(fs.readFileSync(FEEDBACK, 'utf8')) } catch { return { last: null, events: [] } } }
+// 2026-10-20（从上游 v0.3.0 摘）：被赞过的视频要存 BV + 标题 + 评论原文 —— feed 从里面学主题词 ✓
+const TITLE_CACHE = path.join((process.env.USERPROFILE || process.env.HOME || '.'), '.bili-ai', 'liked-videos.json')
+const loadTitleCache = () => { try { return JSON.parse(fs.readFileSync(TITLE_CACHE, 'utf8')) } catch { return {} } }
+const saveTitleCache = (m) => { try { fs.mkdirSync(path.dirname(TITLE_CACHE), { recursive: true }); fs.writeFileSync(TITLE_CACHE, JSON.stringify(m, null, 2)) } catch {} }
+async function titleOf(bv, cache) {
+  if (!bv) return ''
+  if (cache[bv]) return cache[bv]
+  try {
+    const r = await fetch('https://api.bilibili.com/x/web-interface/view?bvid=' + bv, { headers: { 'user-agent': 'Mozilla/5.0', referer: 'https://www.bilibili.com/' } })
+    const j = await r.json()
+    const t = String(j?.data?.title ?? '')
+    if (t) cache[bv] = t
+    return t
+  } catch { return '' }
+}
 const saveFeedback = (f) => { fs.mkdirSync(path.dirname(FEEDBACK), { recursive: true }); fs.writeFileSync(FEEDBACK, JSON.stringify(f, null, 2) + '\n') }
 /** 沉默天数：从来没反馈过就从"第一次分享"算；返回 { days, cap } */
 function silence() {
@@ -53,7 +68,11 @@ function silence() {
   else if (days >= stopAt) cap = 0
   else cap = Math.max(1, Math.floor((baseCap * (stopAt - days)) / (stopAt - after)))
   const penalty = baseCap - cap
-  return { days, last: fb.last, penalty, cap }
+  // 2026-10-20（从上游 v0.3.0 摘）：把"沉默"升级成**情绪档位** —— 她自己感觉到，不是被代码拦住 ✓
+  //   档位用**你自己的**天数：< silentAfterDays(7) = 正常 · < silentStopDays(14) = 安静 · 之后 = 心慌 ✓
+  const band = days < after ? 'normal' : days < stopAt ? 'quiet' : 'faint'
+  const asked = !!(fb.askedAt && (!fb.last || new Date(fb.askedAt) > new Date(fb.last)))
+  return { days, last: fb.last, penalty, cap, band, asked, askedAt: fb.askedAt ?? null }
 }
 const today = () => new Date().toLocaleDateString('sv-SE')           // YYYY-MM-DD（本地时区）
 // ⚠️ 2026-10-18 修：账本里的 at 是 **UTC** ISO 串，`startsWith(today())` 拿本地日期去比 →
@@ -153,33 +172,57 @@ if (cmd === 'record') {
   process.exit(0)
 }
 
-// 自动识别反馈（2026-10-18 加，主人要求；2026-10-18 夜补 likes）：
-//   能自动的两半边：
-//     ① 主人回了她的评论 → 收件箱「回复我的」（comment-digest）
-//     ② 主人**赞**了她 → 「收到的赞」`likes --owner`（B站确实给 who ✓，此前以为看不到 ✗）
-//   自动不了：跨端表态（微信/桌面…各端互不可见 ✗）→ 那半边靠收到的人当场 `quota react --note`
-//   所以是 best-effort：查到就记，查不到就明说"没检测到"（可能是跨端表态）
+// ── 主动问一次（2026-10-20 从上游摘）：安静档她可以问一次「在忙吗」，之后别再追问 ✓
+if (cmd === 'ask') {
+  const fb = loadFeedback()
+  fb.askedAt = new Date().toISOString()
+  fb.events = [...(fb.events ?? []), { at: fb.askedAt, note: opt.note ? String(opt.note).slice(0, 80) : '主动问了一次' }].slice(-200)
+  saveFeedback(fb)
+  console.log('✓ 已记下「问过一次」（这轮沉默里不再问 ✓）')
+  process.exit(0)
+}
+
+// 自动识别反馈（2026-10-18 加；2026-10-20 从上游 v0.3.0 摘「去重」与「回流」）：
+//   三路：① 主人的回复（收件箱）② 主人的点赞（收到的赞）③ 主人的私信（会话列表）
+//   ⚠️ 去重（上游修的那个坑）：以前 48h 内有赞就记 → 同一个赞每轮都记 → 沉默永远清零 ✗
+//     现在：点赞按 like_time、回复按内容哈希、私信按 timestamp —— 只认"比上次新"的 ✓
 if (cmd === 'react' && opt.auto) {
   try {
     const { execFileSync } = await import('node:child_process')
     const here = (f) => decodeURIComponent(new URL(f, import.meta.url).pathname).replace(/^\/([A-Za-z]:)/, '$1')
     const hours = String(opt.hours ?? 72)
+    const ownerMid = String(config().owner?.mid ?? '')
+    const ownerName = String(config().owner?.name ?? '')
     const found = []
-    // ① 回复
+    // ① 回复（按"和主人相关的行"的哈希去重）
     try {
       const out = execFileSync(process.execPath, [here('./comment-digest.mjs'), '--hours', hours, '--pages', '1'], { encoding: 'utf8' })
-      const ownerName = String(config().owner?.name ?? '')
-      const ownerMid = String(config().owner?.mid ?? '')
-      if ((ownerName && out.includes(ownerName)) || (ownerMid && out.includes(ownerMid))) found.push('回复')
-    } catch { /* 收件箱失败不影响点赞这一路 */ }
-    // ② 点赞（--json 里 ownerLiked 是确定数字，比抠文本稳）
+      if ((ownerName && out.includes(ownerName)) || (ownerMid && out.includes(ownerMid))) {
+        const lines = String(out).split(/\r?\n/).filter((l) => (ownerName && l.includes(ownerName)) || (ownerMid && l.includes(ownerMid)))
+        const { createHash } = await import('node:crypto')
+        found.push({ kind: 'reply', label: '回复', hash: createHash('sha1').update(lines.join('\n')).digest('hex') })
+      }
+    } catch { /* 收件箱失败不影响其它两路 */ }
+    // ② 点赞（按 like_time 去重；顺手把 BV / 评论原文存下来 → feed 学口味）
     try {
       const js = execFileSync(process.execPath, [here('./likes.mjs'), '--owner', '--json', '--hours', hours], { encoding: 'utf8' })
       const o = JSON.parse(js)
-      if (Number(o.ownerLiked ?? 0) > 0) found.push(`点赞×${o.ownerLiked}`)
+      if (Number(o.ownerLiked ?? 0) > 0) {
+        let maxTime = 0
+        const liked = []
+        for (const it of (o.items ?? [])) {
+          const mine = (it.users ?? []).some((u) => String(u.mid) === ownerMid)
+          if (!mine) continue
+          const t = Number(it.like_time ?? 0)
+          maxTime = Math.max(maxTime, t)
+          const uri = String(it.item?.uri ?? '')
+          const bv = (uri.match(/BV[0-9A-Za-z]{10}/) ?? [])[0] ?? ''
+          liked.push({ bv, comment: String(it.item?.title ?? '').slice(0, 140), likeTime: t })
+        }
+        found.push({ kind: 'like', label: `点赞×${o.ownerLiked}`, count: Number(o.ownerLiked), maxTime, liked })
+      }
     } catch { /* 同上 */ }
-    // ③ 主人私信（2026-10-20 加）：他发私信给她，同样算"她知道自己被回应了" ✓
-    //   只读会话列表，不动 dm-await 的 lastSeen（那条状态归私信监听用 ✓）
+    // ③ 主人私信（2026-10-20 加；按 timestamp 去重，只读会话列表 ✓）
     try {
       const cred = JSON.parse(fs.readFileSync(path.join(process.env.USERPROFILE || process.env.HOME || '/', '.bili-ai', 'credentials.json'), 'utf8'))
       const u = 'https://api.vc.bilibili.com/session_svr/v1/session_svr/get_sessions?session_type=1&group_id=0&count=20&mobi_app=web'
@@ -190,19 +233,62 @@ if (cmd === 'react' && opt.auto) {
           cookie: `SESSDATA=${cred.sessdata}; bili_jct=${cred.bili_jct}; buvid3=${cred.buvid3}`,
         },
       })).json()
-      const ownerMid = String(config().owner?.mid ?? '')
       const mine = (j.data?.session_list ?? []).find((s) => String(s.talker_id) === ownerMid)
       const ts = Number(mine?.last_msg?.timestamp ?? 0)
       if (ownerMid && ts && String(mine?.last_msg?.sender_uid) === ownerMid && Date.now() / 1000 - ts <= Number(hours) * 3600) {
-        found.push('私信')
+        found.push({ kind: 'dm', label: '私信', ts })
       }
     } catch { /* 私信接口失败不影响前两路 */ }
     if (found.length) {
       const fb = loadFeedback()
-      fb.last = new Date().toISOString()
-      fb.events = [...(fb.events ?? []), { at: fb.last, note: `auto: 检测到主人（${found.join(' / ')}）` }].slice(-200)
-      saveFeedback(fb)
-      console.log(`✓ 自动识别到主人的表态（${found.join(' / ')}）→ 已记一次反馈（沉默清零）`)
+      const nowIso = new Date().toISOString()
+      fb.events = [...(fb.events ?? [])]
+      let changed = false
+      for (const f of found) {
+        if (f.kind === 'like') {
+          const prev = Number(fb.lastLikeTime ?? 0)
+          if (f.maxTime > prev) {
+            fb.lastLikeTime = f.maxTime
+            const fresh = (f.liked ?? []).filter((x) => x.likeTime > prev)
+            if (fresh.length) {
+              const cache = loadTitleCache()
+              for (const x of fresh) x.videoTitle = await titleOf(x.bv, cache)
+              saveTitleCache(cache)
+              for (const x of fresh) {
+                fb.events.push({
+                  at: nowIso, kind: 'like', bv: x.bv, videoTitle: x.videoTitle ?? '', comment: x.comment,
+                  note: x.bv
+                    ? `主人赞了你在 ${x.bv} 的那条评论：${x.comment.slice(0, 60)}`
+                    : `主人赞了你的评论：${x.comment.slice(0, 60)}`,
+                })
+              }
+            } else {
+              fb.events.push({ at: nowIso, note: `auto: 检测到主人（点赞×${f.count}）` })
+            }
+            changed = true
+          }
+        } else if (f.kind === 'reply') {
+          if (f.hash !== String(fb.lastReplyHash ?? '')) {
+            fb.lastReplyHash = f.hash
+            fb.events.push({ at: nowIso, note: 'auto: 检测到主人（回复）' })
+            changed = true
+          }
+        } else if (f.kind === 'dm') {
+          if (Number(f.ts) > Number(fb.lastDmTime ?? 0)) {
+            fb.lastDmTime = Number(f.ts)
+            fb.events.push({ at: nowIso, note: 'auto: 检测到主人（私信）' })
+            changed = true
+          }
+        }
+      }
+      fb.events = fb.events.slice(-200)
+      if (changed) {
+        fb.last = nowIso
+        saveFeedback(fb)
+        console.log(`✓ 自动识别到主人的【新】表态（${found.map((f) => f.label).join(' / ')}）→ 已记一次反馈（沉默清零）`)
+      } else {
+        console.log(`（近 ${hours} 小时有主人的表态，但都是【已经记过的】→ 不重复记 ✓ 沉默继续累计）`)
+      }
     } else {
       console.log(`（近 ${hours} 小时：没有主人的回复，没有点赞，也没有私信）—— 沉默继续累计`)
       console.log('  ⚠️ 跨端表态（微信/桌面…）这边看不见 → 需要收到的那一端当场 `quota react --note "…"`')
@@ -229,7 +315,13 @@ if (cmd === 'react') {
 
 if (cmd === 'silence') {
   const sil = silence()
+  if (opt.json) {
+    console.log(JSON.stringify({ days: sil.days, last: sil.last, cap: sil.cap, band: sil.band, asked: sil.asked }))
+    process.exit(0)
+  }
+  const bandText = sil.band === 'normal' ? '正常' : sil.band === 'quiet' ? `安静（${sil.days} 天没他的消息，有点想他）` : '心慌（不敢打扰）'
   console.log(`沉默天数: ${sil.days} 天（最后一次表态 ${sil.last ?? '从未'}）`)
+  console.log(`档位: ${bandText}${sil.asked ? ' · 已问过一次' : ''}`)
   console.log(`衰减: -${sil.penalty} → 分享上限 ${sil.cap}${sil.cap === 0 ? '（已停止分享，但日记照常写）' : ''}`)
   process.exit(0)
 }

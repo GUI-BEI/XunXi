@@ -42,6 +42,29 @@
 
 - README 顶部加显著声明：本项目是 **Alterssss/dsh-bili-whale** 的个人修改版、基线 v0.2.0、上游已到 v0.3.0、许可证与原作者版权声明保留。
 
+### 六、从上游 v0.3.0「会感觉的一版」摘过来的（2026-10-20 晚）
+
+- **收藏 `bili.mjs fav`**（新增 `tools/commands/fav.mjs`）
+  - `<BV> [--reason "…"] [--kind 想学|想再看|和我有关|以后要提] --dry|--go` · `--list [--json]` · `--check <BV>`
+  - 写 B站 "默认收藏夹"（`x/v3/fav/resource/deal`），并存本地账 `~/.bili-ai/favorites.json`（feed 会读）
+  - ⚠️ **判据改成建议**：理由长度 / 每天 ≤3 / 30 天去重 / 同类 ≥2 要 `--better` —— 只提醒，不拦（上游是写死的闸门）
+- **选题器 `feed` 大改**（原样摘）
+  - 默认四源：搜索 + 热门 + 排行 + 关注；**去掉播放量权重**；弹幕密度取 `log10`
+  - 新公式：`log10(1+弹幕密度)×3 + 偏好命中×4 + 反馈学习×2.5（封顶 7.5）`
+  - 多样性：同类 ≤2、完全没命中的 ≤1；**不再推荐她自己的视频**
+- **反馈回流**：`quota react` 把"被赞评论"的 BV / 评论原文 / 视频标题存进 `feedback.json`（标题缓存在 `liked-videos.json`），`feed` 从里学主题词给候选加权；她收藏过的也参与（`favorites.json`）
+- **启动测试 `bili.mjs selftest`**：配置 / 身份 / 权限 / 凭据 / 登录态 / 目录 / 日记 / deps 一次列完，最后给"未分组会话 + 完全访问"两条最容易卡的事；全绿写 `~/.bili-ai/selftest-passed.json`。设置页顶部据此显示首次安装横幅（`/api/settings` 返回 `selftestPassed`）
+- **沉默叙事**（`lib/scheduler.js` 的 `silenceLines()`）
+  - 唤醒提示先给事实：「主人已经 N 天没有回应你了」；安静档（≥ `silentAfterDays`）最多分享 1 条、可以**主动问一次**「在忙吗」；心慌档（≥ `silentStopDays`）不分享、只写心情
+  - **恢复转折**：靠 `~/.bili-ai/silence-seen.json` 对比，沉默很久后又等到他 → 「【他回来了】」
+  - 新增 `quota ask --note "…"`（只问一次，不追问）；`quota silence` 显示档位并支持 `--json`
+  - ⚠️ **天数用本仓库自己的口径**：7 天安静、14 天心慌（上游是 3/7）
+- **`quota react` 去重**（上游修的真 bug）
+  - 以前 48h 内有赞就记 → 同一个赞每轮都记 → 沉默永远清零；现在：点赞按 `like_time`、回复按内容哈希、私信按 `timestamp` 去重，只认"比上次新"的
+- **未摘**（明确不要）：上游重新引入的 `skipChance` 掷骰子及其 8 层修复（本版已删骰子，选择权在她）、`diary.push` 开关调整、`danmaku-auto` / 动态诊断脚本
+
+> 核实记录：上游 CHANGELOG 声称的 PR #2（node 路径）在 v0.3.0 代码里**已被 revert**（本仓库保留）；PR #3（TEMP 重定向 / 捕获式 stdio）也被 revert，本仓库未摘。
+
 ---
 
 ## v0.2.0 —— 私信版（2026-10-19）
