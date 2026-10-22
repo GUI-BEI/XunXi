@@ -46,7 +46,8 @@ export const DEFAULTS = {
   listen: { comment: true, commentIntervalSec: 300, dmIntervalSec: 60, scope: 'both', oncePerPerson: false, allDay: false, dm: false, live: false, liveRoom: '', liveScope: 'owner' },
   // 作息：windows[] = 每天允许醒来的时段（每个窗口 = 一次机会）；maxWakesPerDay 缺省 = 窗口数（硬上限 3）
   // 2026-10-20：去掉 skipChance —— **看不看由她自己定**，不再掷骰子 ✓
-  night: { windows: [{ start: '20:00', end: '24:00', wakes: 1 }], maxVideos: 5 },
+  // 2026-10-20 晚：minGapMinutes = 同一窗口里两次叫醒的最小间隔（窗口会被均分，这只是兜底）
+  night: { windows: [{ start: '20:00', end: '24:00', wakes: 1 }], maxVideos: 5, minGapMinutes: 30 },
 }
 
 /** 2026-10-20 迁移：旧版 share.via（二选一）/ share.enabled（总开关）→ 两个权限开关 */

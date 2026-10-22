@@ -24,7 +24,9 @@
 //   兼容旧配置：没有 windows 时，用 windowStart/windowEnd 当成"一个窗口"。
 //
 // 设计原则（2026-10-14 起，2026-10-17 扩成多窗口，2026-10-20 改"看不看"）：
-//   · **窗口固定，时刻随机** —— 机器才准点 ✗。每个窗口内随机挑一个时刻。
+//   · **窗口固定，时刻随机但均分** —— 机器才准点 ✗。同一窗口的 N 趟把窗口均分成 N 段，
+//     每趟只在自己那一段里随机（2026-10-20 主人反馈：以前几次会挤在一起）；
+//     再兜一条最小间隔 night.minGapMinutes（默认 30 分钟）✓
 //   · **窗口 = 一次醒来的机会**，但**每天合计 ≤ maxWakesPerDay**（默认 = 窗口数，硬上限 3）——
 //     窗口可以设四个，但不能醒四次（每次醒来都是一笔真开销）。
 //   · **看不看，她自己定**（2026-10-20 主人定）—— 不再掷 skipChance 骰子 ✗。
@@ -126,9 +128,11 @@ function makePlan(base = st) {
   const used = usedOf(base)
   const veto = vetoOf(base)
   const vetoedSlots = vetoedSlotsOf(base)
+  // 2026-10-20 晚：这个窗口"剩下几趟"的预排时刻（一趟一趟排的话第三趟会被挤到最后 ✗）
+  const slotTimes = base.date === today() && base.slotTimes && typeof base.slotTimes === 'object' ? { ...base.slotTimes } : {}
   // ⚠️ 2026-10-20：done 也要带上 usedCount/veto/vetoedSlots —— 否则状态一变成 done 就
   //   "忘了今天用掉几次 / 吃过哪几趟"，她在同一天再跑 decide 会看到错的"还剩几次" ✗
-  const doneState = (reason) => ({ date: today(), action: 'done', wakes: done, usedCount: used, veto, vetoedSlots, reason })
+  const doneState = (reason) => ({ date: today(), action: 'done', wakes: done, usedCount: used, veto, vetoedSlots, slotTimes, reason })
   if (MAX_WAKES === 0) return doneState('所有窗口的"醒来次数"都是 0 → 今天不醒')
   if (done >= MAX_WAKES) return doneState(`今天已经醒了 ${done} 次（上限 ${MAX_WAKES}）`)
   // 每次占一个"唤醒机会"：她说别叫的那几次直接吃掉（记进 vetoedSlots，改主意时能还回来 ✓）
@@ -139,11 +143,50 @@ function makePlan(base = st) {
     used[s.label] = (used[s.label] ?? 0) + 1
     if (veto.includes(s.ordinal)) { vetoedSlots.push(s.ordinal); continue }   // 她说过别叫 → 吃掉，但不排
     const w = WINDOWS.find((x) => x.label === s.label) ?? WINDOWS[0]
-    let at = w.start + Math.floor(Math.random() * Math.max(1, w.end - w.start))
-    if (at <= now) at = Math.min(w.end - 1, now + 1 + Math.floor(Math.random() * 10))
+    // ── 2026-10-20 晚（主人反馈：同一窗口里两次叫醒挨太近）────────────────────
+    //   以前每次都在**整个窗口**里随机 → 两次可以只隔几分钟 ✗
+    //   现在：**这个窗口剩下的几趟一起排**（存进 state.slotTimes），每趟落在自己那一格里
+    //     · 窗口还早 → from = 窗口开始，均分成"还剩几趟"格 → 每格中间 60% 随机
+    //     · 中途才启动 → from = max(现在, 上次叫醒+minGap) → 剩下的时间同样均分 ✓
+    //   存下来是为了**三趟之间互相对齐**：不存的话每趟都按"现在"重算，第三趟会被挤到最后 ✗
+    const minGap = Math.max(0, Number(cfg.minGapMinutes ?? 30))
+    const lastWakeAt = base.date === today() ? Number(base.lastWakeAt ?? NaN) : NaN
+    const sig = `${w.start}-${w.end}-${w.wakes}`
+    let slot = slotTimes[s.label]
+    const rebuild = !slot || slot.sig !== sig || !Array.isArray(slot.ats) || slot.startNth > s.nth || (slot.ats[s.nth - slot.startNth] ?? 0) <= now + 1
+    if (rebuild) {
+      const from0 = Math.max(now + 1, Number.isFinite(lastWakeAt) ? lastWakeAt + minGap : 0, w.start)
+      const left = Math.max(1, w.wakes - (s.nth - 1))          // 含这一次还剩几趟
+      const step0 = Math.max(1, (w.end - from0) / left)
+      // 短窗口里"最小间隔"可能比每格还大 → 会把它顶到窗口末尾 ✗ → 按格长的 90% 收一收 ✓
+      const gapUse = Math.min(minGap, Math.max(5, Math.round(step0 * 0.9)))
+      const from = Math.max(from0, Number.isFinite(lastWakeAt) ? lastWakeAt + gapUse : 0)
+      const step = Math.max(1, (w.end - from) / left)
+      const ats = []
+      for (let i = 0; i < left; i += 1) {
+        const b = from + i * step
+        // 每格里随机，但收在中间 60%（一趟的窗口整格随便挑 ✓）
+        const jitter = Math.random() * Math.max(1, step * (left > 1 ? 0.6 : 0.98))
+        ats.push(Math.min(w.end - 1, Math.round(b + jitter)))
+      }
+      slot = { sig, startNth: s.nth, ats }
+      slotTimes[s.label] = slot
+    }
+    const idx = Math.min(slot.ats.length - 1, Math.max(0, s.nth - slot.startNth))
+    let at = Number(slot.ats[idx] ?? now + 1)
+    // 兜底：不贴着现在已经 / 不违反最小间隔（同样按格长收）/ 不越出窗口
+    const gridStep = slot.ats.length > 1 ? Math.max(1, Math.abs(slot.ats[1] - slot.ats[0])) : Math.max(1, w.end - w.start)
+    const gapUse = Math.min(minGap, Math.max(5, Math.round(gridStep * 0.9)))
+    const floor = Math.max(now + 1, Number.isFinite(lastWakeAt) ? lastWakeAt + gapUse : 0)
+    if (at < floor && floor < w.end - 1) at = floor
+    if (at <= now) at = Math.min(w.end - 1, now + 1 + Math.floor(Math.random() * 5))
+    if (at >= w.end) at = w.end - 1
     return {
       date: today(), action: 'wake', at, atText: hhmm(at), wakes: done, usedCount: used,
       window: s.label, withinWindow: `${s.label} 第 ${s.nth}/${s.of} 次`, atOrdinal: s.ordinal,
+      // 记下这次排的时刻 —— 下一次 plan 用它算"最小间隔"，也方便 status 里看 ✓
+      lastWakeAt: at,
+      slotTimes,
       veto, vetoedSlots, roll: 'watch', decision: 'pending', maxVideos: cfg.maxVideos ?? 5, createdAt: new Date().toISOString(),
     }
   }
