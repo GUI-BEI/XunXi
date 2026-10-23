@@ -105,6 +105,16 @@
 - 配置（预防下一次）：`quota.shareDaily` 5 → **2**、`listen.dmIntervalSec` 60 → **120**
 - 踩坑记录：PowerShell 5.1 的 `Set-Content -Encoding UTF8` 会写 **BOM** → `JSON.parse` 失败 → 插件悄悄用了默认值（表现为"改了没生效"）。改配置一律用 `[IO.File]::WriteAllText(path, text, UTF8Encoding(false))`
 
+### 十一、她的家搬到 D:\XunXi 工作区（2026-10-23）
+
+- 起因：`/list` 里看不到她 —— 她的会话在 `C:\Users\Lenovo`（**未登记成工作区**），QQ 插件只列"工作区"这一层
+- 迁移：会话（`bili-whale`，1917 条记录 / 1191 个 zstd 帧）+ 人格卡（`AGENTS.md`）+ 唤醒目录，一起搬到 `D:\XunXi`
+  - 会话文件按帧切分 → 只重压第 0 帧（把 `cwd` 改成 `D:\XunXi`）→ 其余 1190 帧字节不动 → 回读逐帧校验通过
+  - 旧目录移出 `sessions/` 树（备份在 `~/.dsh/_migrate-backup/`），避免同一个 sessionId 在两个工作区里打架
+- 代码：`workspace` 配置 + `herWorkspace()`（index.js）、`persona.mjs` 改用工作区、`archiveTick()` 同时快照两个仓库
+- 新家 `D:\XunXi` 自己也是一个 git 仓库（只跟踪 `AGENTS.md`），家目录仓库只留日记与配置
+- 结果：QQ `/list` 的 `XunXi` 夹里出现「寻汐」（会话标题），能直接聊
+
 ---
 
 ## v0.2.0 —— 私信版（2026-10-19）

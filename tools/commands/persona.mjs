@@ -16,9 +16,12 @@ import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import { spawnSync } from 'node:child_process'
+import { config } from '../lib/config.mjs'
 
 const HOME = process.env.USERPROFILE || process.env.HOME || '.'
-const AGENTS = path.join(HOME, 'AGENTS.md')
+// 2026-10-23：人格卡在工作区里（可能被搬到 D:\XunXi）—— 优先用配置里的 workspace ✓
+const WS = (() => { try { const w = String(config().workspace ?? '').trim(); return w && fs.existsSync(w) ? w : HOME } catch { return HOME } })()
+const AGENTS = path.join(WS, 'AGENTS.md')
 const BACKUP_DIR = path.join(HOME, '.dsh', 'persona-backups')
 const LOG = path.join(HOME, '.dsh', 'whale-log.jsonl')
 const argv = process.argv.slice(2)
@@ -37,7 +40,7 @@ const logEvent = (kind, note) => {
   } catch {}
 }
 /** 在 ~ 里跑 git（stdio: inherit —— 沙箱里捕获式子进程会 EPERM ✓） */
-const git = (args) => spawnSync('git', ['-C', HOME, ...args], { stdio: 'inherit', windowsHide: true })
+const git = (args) => spawnSync('git', ['-C', WS, ...args], { stdio: 'inherit', windowsHide: true })
 
 if (cmd === 'backup') {
   if (!fs.existsSync(AGENTS)) { console.error(`✗ 没有人格卡：${AGENTS}`); process.exit(2) }
@@ -54,11 +57,11 @@ if (cmd === 'backup') {
   console.log('  改完记得：`node bili.mjs persona commit`（进 git，可 diff/回滚）')
   process.exitCode = 0
 } else if (cmd === 'commit') {
-  const probe = spawnSync('git', ['-C', HOME, 'rev-parse', '--git-dir'], { encoding: 'utf8', windowsHide: true })
+  const probe = spawnSync('git', ['-C', WS, 'rev-parse', '--git-dir'], { encoding: 'utf8', windowsHide: true })
   // ⚠️ 在 DSH 沙箱里捕获式子进程会 EPERM（piped stdio）—— 那不是"没仓库"，别误报 ✓
   const sandboxed = !!probe.error && /EPERM|EACCES|spawn .*EPERM/.test(String(probe.error.message))
   if (probe.status !== 0 && !sandboxed) {
-    console.error(`✗ 家目录还不是 git 仓库：${HOME}`)
+    console.error(`✗ 人格卡所在目录还不是 git 仓库：${WS}`)
     console.error('  修：cd ~ && git init -b main（或问阿墨帮你在 AGENTS.md/.dsh 上建一个）')
     process.exit(2)
   }
@@ -81,8 +84,8 @@ if (cmd === 'backup') {
     } catch {}
   }
   console.log('\n== 最近的提交（只看 ~ 仓库）==')
-  const g = spawnSync('git', ['-C', HOME, 'log', '--oneline', '-5'], { encoding: 'utf8', windowsHide: true })
-  if (g.error) console.log('（这台机器/沙箱里读不到 git 输出 —— 换普通终端跑 `git -C ~ log --oneline`）')
+  const g = spawnSync('git', ['-C', WS, 'log', '--oneline', '-5'], { encoding: 'utf8', windowsHide: true })
+  if (g.error) console.log('（这台机器/沙箱里读不到 git 输出 —— 换普通终端跑 `git -C ${WS} log --oneline`）')
   else if (g.status === 0) console.log(String(g.stdout || '').trim() || '（还没有提交）')
   else console.log('（家目录不是 git 仓库）')
   process.exitCode = 0
