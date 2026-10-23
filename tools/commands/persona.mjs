@@ -57,21 +57,24 @@ if (cmd === 'backup') {
   console.log('  改完记得：`node bili.mjs persona commit`（进 git，可 diff/回滚）')
   process.exitCode = 0
 } else if (cmd === 'commit') {
-  const probe = spawnSync('git', ['-C', WS, 'rev-parse', '--git-dir'], { encoding: 'utf8', windowsHide: true })
-  // ⚠️ 在 DSH 沙箱里捕获式子进程会 EPERM（piped stdio）—— 那不是"没仓库"，别误报 ✓
-  const sandboxed = !!probe.error && /EPERM|EACCES|spawn .*EPERM/.test(String(probe.error.message))
-  if (probe.status !== 0 && !sandboxed) {
-    console.error(`✗ 人格卡所在目录还不是 git 仓库：${WS}`)
-    console.error('  修：cd ~ && git init -b main（或问阿墨帮你在 AGENTS.md/.dsh 上建一个）')
-    process.exit(2)
+  // 2026-10-23：她的家搬到了 D:\XunXi，但**日记的版本历史还在家目录那个仓库** ✓
+  //   所以手动 commit 也要两个仓库都盖（不然 persona commit 只提 AGENTS.md，日记那边断档 ✗）
+  const repos = [...new Set([WS, HOME])]
+  let committed = 0
+  let failed = 0
+  for (const dir of repos) {
+    const probe = spawnSync('git', ['-C', dir, 'rev-parse', '--git-dir'], { encoding: 'utf8', windowsHide: true })
+    const sandboxed = !!probe.error && /EPERM|EACCES|spawn .*EPERM/.test(String(probe.error.message))
+    if (probe.status !== 0 && !sandboxed) { console.log(`（跳过 ${dir}：不是 git 仓库）`); continue }
+    const add = spawnSync('git', ['-C', dir, 'add', '-A'], { stdio: 'inherit', windowsHide: true })
+    if (add.status !== 0) { failed += 1; continue }
+    const msg = `persona: ${new Date().toISOString().slice(0, 19).replace('T', ' ')} 人格卡/日记快照`
+    const r = spawnSync('git', ['-C', dir, 'commit', '-m', msg], { stdio: 'inherit', windowsHide: true })
+    if (r.status === 0) { committed += 1; logEvent('persona-commit', `${dir} :: ${msg}`) }
+    else if (r.status !== 1) failed += 1     // 1 = 没改动，不算失败 ✓
   }
-  const add = git(['add', '-A'])
-  if (add.status !== 0) { console.error('✗ git add 失败'); process.exit(3) }
-  const msg = `persona: ${new Date().toISOString().slice(0, 19).replace('T', ' ')} 人格卡/配置快照`
-  const r = git(['commit', '-m', msg])
-  if (r.status === 0) { logEvent('persona-commit', msg); console.log(`✓ 已提交：${msg}`); process.exitCode = 0 }
-  else if (r.status === 1) { console.log('（没有改动，不用提交 ✓）'); process.exitCode = 0 }
-  else { console.error('✗ git commit 失败（看上面的输出）'); process.exitCode = 3 }
+  if (failed) { console.error(`✗ ${failed} 个仓库提交失败（看上面的输出）`); process.exitCode = 3 }
+  else { console.log(committed ? `✓ 已提交 ${committed} 个仓库` : '（没有改动，不用提交 ✓）'); process.exitCode = 0 }
 } else if (cmd === 'log') {
   let backups = []
   try { backups = fs.readdirSync(BACKUP_DIR).filter((f) => f.endsWith('.md')).sort().reverse() } catch {}
@@ -83,16 +86,19 @@ if (cmd === 'backup') {
       console.log(`  ${f}  ${(st.size / 1024).toFixed(1)}KB  ${st.mtime.toLocaleString('zh-CN', { hour12: false })}`)
     } catch {}
   }
-  console.log('\n== 最近的提交（只看 ~ 仓库）==')
-  const g = spawnSync('git', ['-C', WS, 'log', '--oneline', '-5'], { encoding: 'utf8', windowsHide: true })
-  if (g.error) console.log('（这台机器/沙箱里读不到 git 输出 —— 换普通终端跑 `git -C ${WS} log --oneline`）')
-  else if (g.status === 0) console.log(String(g.stdout || '').trim() || '（还没有提交）')
-  else console.log('（家目录不是 git 仓库）')
+  // 2026-10-23：两个仓库都看 —— 人格卡在 WS，日记的版本历史在 HOME ✓
+  for (const [label, dir] of [['人格卡/工作区', WS], ['日记/配置（家目录）', HOME]]) {
+    console.log(`\n== 最近的提交（${label} · ${dir}）==`)
+    const g = spawnSync('git', ['-C', dir, 'log', '--oneline', '-5'], { encoding: 'utf8', windowsHide: true })
+    if (g.error) console.log('（读不到 git 输出 —— 换普通终端跑 `git -C ' + dir + ' log --oneline`）')
+    else if (g.status === 0) console.log(String(g.stdout || '').trim() || '（还没有提交）')
+    else console.log(`（${dir} 不是 git 仓库）`)
+  }
   process.exitCode = 0
 } else if (cmd === 'diff') {
   console.log(`== 人格卡相对上次提交的改动（${AGENTS}）==`)
-  const r = git(['diff', '--', 'AGENTS.md'])
-  if (r.status !== 0) { console.error('（git diff 失败：家目录可能不是仓库）'); process.exitCode = 3 }
+  const r = spawnSync('git', ['-C', WS, 'diff', '--', 'AGENTS.md'], { stdio: 'inherit', windowsHide: true })
+  if (r.status !== 0) { console.error('（git diff 失败：工作区可能不是仓库）'); process.exitCode = 3 }
   else process.exitCode = 0
 } else {
   console.error('用法: node bili.mjs persona backup | commit | log | diff')
