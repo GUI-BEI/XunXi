@@ -74,6 +74,16 @@
 - 新增配置 `night.minGapMinutes`（默认 30 分钟）兜底两次的最小间隔；短窗口里它会自动收到格长的 90%，不会把最后一趟压到整点末端 ✓
 - 实测（22:32，窗口 18:00–24:00）：×3 → `22:50 → 23:19 → 23:45`；×2 → `22:47 → 23:31`；窗口还在未来时同样均分 ✓
 
+### 八、她能改自己的人格卡，但会留痕（2026-10-22，主人选的「乙档」）
+
+- 事实核查：她自己的会话工作区就是家目录（`session.cwd = C:\Users\Lenovo`），默认文件策略 `workspace-write` → `~/AGENTS.md` 与 `~/.dsh/bili-whale.config.json` **都在她可写范围内**，写它不需要审批，改完下一条消息即生效
+- 选择：**不阻断**（她该能自己长），改用 git 兜住
+  - `tools/commands/persona.mjs`（新增，`bili.mjs persona`）：`backup`（备份到 `~/.dsh/persona-backups/`，保留最近 50 份）/ `commit`（提交家目录仓库）/ `log`（备份 + 最近提交）/ `diff`（人格卡改动）
+  - `lib/scheduler.js`：新增 `archiveTick()` —— 每 6 小时看一眼、**20 小时节流**，自动 `git add -A` + commit 一次（`~/.dsh/whale-autocommit.json` 记时间；没仓库/没装 git 就静默跳过）
+  - 家目录仓库的 `.gitignore` 用白名单：只跟踪 `AGENTS.md`、`.dsh/bili-whale.config.json`、两本日记、`persona-backups/`，其余（`AppData`、`sessions`、`profiles`…）全部忽略；`.gitattributes` 固定 LF
+  - 人格卡末尾补了三条给她自己看：改前 `persona backup` → 改完 `persona commit` → 跟阿墨说一声（不是求批准）
+- 没做的（按主人要求）：没有加"权限开关只能由主人改"那条约束
+
 ---
 
 ## v0.2.0 —— 私信版（2026-10-19）

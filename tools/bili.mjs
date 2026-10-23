@@ -31,6 +31,7 @@ const map = {
   diary: ['commands/diary.mjs', '她的一天（可见性）：show 人读摘要 / log 记结构化事件 / tail 最近事件'],
   notify: ['commands/notify.mjs', '通知分发：把"自主发言后必须报备"落到代码里（后端 stdout/file/webhook/command，由 config.notify 决定）'],
   mark: ['commands/mark.mjs', '留记号（已读不回）：seen 记一笔 / list 看最近几条 —— 不走 B站，主人在设置页能看到'],
+  persona: ['commands/persona.mjs', '人格卡版本化：backup 备份 / commit 提交 / log 看历史 / diff 看改动 —— 她可以改自己，但会留痕 ✓'],
   night: ['commands/whale-night.mjs', '生物钟：plan 算今晚 / decide 定看不看与要不要被叫醒 / status 看计划'],
   search: ['commands/search.mjs', '按关键词搜视频（WBI 签名）：标题/UP/播放/简介/标签'],
   covers: ['diagnostics/fetch-covers.mjs', '抓视频元信息 + 封面图存到 covers/（供看图理解内容）'],
