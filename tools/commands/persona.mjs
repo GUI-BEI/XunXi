@@ -55,9 +55,11 @@ if (cmd === 'backup') {
   process.exitCode = 0
 } else if (cmd === 'commit') {
   const probe = spawnSync('git', ['-C', HOME, 'rev-parse', '--git-dir'], { encoding: 'utf8', windowsHide: true })
-  if (probe.status !== 0) {
+  // ⚠️ 在 DSH 沙箱里捕获式子进程会 EPERM（piped stdio）—— 那不是"没仓库"，别误报 ✓
+  const sandboxed = !!probe.error && /EPERM|EACCES|spawn .*EPERM/.test(String(probe.error.message))
+  if (probe.status !== 0 && !sandboxed) {
     console.error(`✗ 家目录还不是 git 仓库：${HOME}`)
-    console.error('  修：cd ~ && git init -b main（或问我帮你在 AGENTS.md/.dsh 上建一个）')
+    console.error('  修：cd ~ && git init -b main（或问阿墨帮你在 AGENTS.md/.dsh 上建一个）')
     process.exit(2)
   }
   const add = git(['add', '-A'])
@@ -80,7 +82,8 @@ if (cmd === 'backup') {
   }
   console.log('\n== 最近的提交（只看 ~ 仓库）==')
   const g = spawnSync('git', ['-C', HOME, 'log', '--oneline', '-5'], { encoding: 'utf8', windowsHide: true })
-  if (g.status === 0) console.log(String(g.stdout || '').trim() || '（还没有提交）')
+  if (g.error) console.log('（这台机器/沙箱里读不到 git 输出 —— 换普通终端跑 `git -C ~ log --oneline`）')
+  else if (g.status === 0) console.log(String(g.stdout || '').trim() || '（还没有提交）')
   else console.log('（家目录不是 git 仓库）')
   process.exitCode = 0
 } else if (cmd === 'diff') {
