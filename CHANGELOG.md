@@ -95,6 +95,16 @@
 - 家目录仓库 `.gitignore` 忽略自动生成的 `INDEX.md`（避免每天 churn）
 - 实测：`memory index` → 26 段（10-19 ~ 10-23）；`recall "猫咪"` → 命中 6 段、按新→旧给出片段；`diary recent --days 2` → 只回最近两天的两本内容 ✓
 
+### 十、只读模式（2026-10-23，她的号被 B 站风控要求实名/人脸）
+
+- 现象：`x/web-interface/nav` 返回 `-101 账号未登录` —— 网页/App 都登不上，平台要求实名 + 人脸；读（feed/搜索/排行/深读）仍可用，写（评论/私信/点赞/收件箱）全断
+- 代码改动（`lib/scheduler.js`）：
+  - 模块级 `authOk`：启动时读 `whale-auth.json`，之后由 `authTick()` 更新
+  - `dmTick()` / `listenTick()` 在 `!authOk` 时直接 return（不再每 30–60 秒撞一次 `-101`，也不再刷事件流）
+  - `wakePrompt()`：只读时替换第 5 步（分享/评论/私信）与第 7/7.5/8 步（收件箱/反馈/B站私信报备），改为「看、读日记、写日记、用 `notify_qq` 找阿墨；评论/私信/点赞/重试一律别做」
+- 配置（预防下一次）：`quota.shareDaily` 5 → **2**、`listen.dmIntervalSec` 60 → **120**
+- 踩坑记录：PowerShell 5.1 的 `Set-Content -Encoding UTF8` 会写 **BOM** → `JSON.parse` 失败 → 插件悄悄用了默认值（表现为"改了没生效"）。改配置一律用 `[IO.File]::WriteAllText(path, text, UTF8Encoding(false))`
+
 ---
 
 ## v0.2.0 —— 私信版（2026-10-19）
