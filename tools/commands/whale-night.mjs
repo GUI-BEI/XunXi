@@ -133,6 +133,11 @@ function makePlan(base = st) {
   // ⚠️ 2026-10-20：done 也要带上 usedCount/veto/vetoedSlots —— 否则状态一变成 done 就
   //   "忘了今天用掉几次 / 吃过哪几趟"，她在同一天再跑 decide 会看到错的"还剩几次" ✗
   const doneState = (reason) => ({ date: today(), action: 'done', wakes: done, usedCount: used, veto, vetoedSlots, slotTimes, reason })
+  // 2026-10-23 修：**还没落地的计划不要重排** —— 每 plan 一次就吃掉一个唤醒机会，
+  //   插件重启（或两个 tick 撞一起）会把当晚剩下那一趟直接抹掉（实测：21:13 那趟被吃掉，当晚就不写日记 ✗）
+  if (base.date === today() && base.action === 'wake' && base.fired !== true && Number(base.at ?? 0) > now) {
+    return { ...base, reused: true }
+  }
   if (MAX_WAKES === 0) return doneState('所有窗口的"醒来次数"都是 0 → 今天不醒')
   if (done >= MAX_WAKES) return doneState(`今天已经醒了 ${done} 次（上限 ${MAX_WAKES}）`)
   // 每次占一个"唤醒机会"：她说别叫的那几次直接吃掉（记进 vetoedSlots，改主意时能还回来 ✓）
