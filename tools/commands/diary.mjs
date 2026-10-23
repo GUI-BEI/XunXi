@@ -52,6 +52,41 @@ if (cmd === 'tail') {
   process.exit(0)
 }
 
+if (cmd === 'recent') {
+  // 2026-10-23 加：**只读最近 N 天**（默认 2 天）—— 日记无限追加，全文读会把上下文撑爆 ✗
+  //   更早的事：`recall "关键词"`；全史一屏：`memory index` ✓
+  const days = Math.max(1, Number(opt.days ?? 2))
+  const cutoff = new Date(Date.now() - (days - 1) * 86400000).toLocaleDateString('sv-SE')
+  const files = [
+    { label: '公开', path: DIARY },
+    { label: '私人', path: path.join(HOME, '.dsh', 'whale-diary-private.md') },
+  ]
+  let printed = 0
+  for (const f of files) {
+    let text = ''
+    try { text = fs.readFileSync(f.path, 'utf8') } catch { continue }
+    const parts = []
+    let cur = null
+    for (const line of text.split(/\r?\n/)) {
+      const h = line.match(/^##\s+(\d{4}-\d{2}-\d{2})(.*)$/)
+      if (h) { cur = { date: h[1], head: line.trim(), lines: [] }; parts.push(cur) }
+      else if (cur) cur.lines.push(line)
+    }
+    const keep = parts.filter((p) => p.date >= cutoff)
+    if (!keep.length) continue
+    console.log(`\n════ ${f.label}日记 · 最近 ${days} 天（${cutoff} ~ ${today()}）════`)
+    for (const p of keep) {
+      const body = p.lines.join('\n').replace(/\n{3,}/g, '\n\n').trim()
+      console.log('\n' + p.head)
+      if (body) console.log(body)
+      printed += 1
+    }
+  }
+  if (!printed) console.log('（最近这几天还没写日记）')
+  console.log('\n（更早的事：`recall "关键词" --days 60`；全史一屏：`memory index`）')
+  process.exit(0)
+}
+
 if (cmd === 'show' || !cmd) {
   const days = Number(opt.days ?? 1)
   const since = new Date(Date.now() - (days - 1) * 86400000).toLocaleDateString('sv-SE')
