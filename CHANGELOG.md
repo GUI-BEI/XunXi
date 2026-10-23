@@ -1,8 +1,4 @@
 # 更新日志
-- 唤醒提示里写的是字面命令 `node bili.mjs …`，但工作区根上没有 `bili.mjs` → 在两个根各放一个**转发入口**（`D:\XunXi\bili.mjs`、`C:\Users\Lenovo\bili.mjs`）：
-  - 只做一件事：找到真正的 `bili-whale\tools\bili.mjs`，原样转发参数与退出码；不碰插件本体，删掉即回滚
-  - 两个位置都被各自仓库的 `.gitignore` 挡住（不脏 git）
-- `persona commit` / `persona log` 现在**同时覆盖两个仓库**（工作区=人格卡，家目录=两本日记），日记的版本历史不会因为搬家断档
 
 ## XunXi 分支（2026-10-20，基于上游 v0.2.0）
 
@@ -118,6 +114,10 @@
 - 代码：`workspace` 配置 + `herWorkspace()`（index.js）、`persona.mjs` 改用工作区、`archiveTick()` 同时快照两个仓库
 - 新家 `D:\XunXi` 自己也是一个 git 仓库（只跟踪 `AGENTS.md`），家目录仓库只留日记与配置
 - 结果：QQ `/list` 的 `XunXi` 夹里出现「寻汐」（会话标题），能直接聊
+- 唤醒提示里写的是字面命令 `node bili.mjs …`，但工作区根上没有 `bili.mjs` → 在两个根各放一个**转发入口**（`D:\XunXi\bili.mjs`、`C:\Users\Lenovo\bili.mjs`）：
+  - 只做一件事：找到真正的 `bili-whale\tools\bili.mjs`，原样转发参数与退出码；不碰插件本体，删掉即回滚
+  - 两个位置都被各自仓库的 `.gitignore` 挡住（不脏 git）
+- `persona commit` / `persona log` 现在**同时覆盖两个仓库**（工作区=人格卡，家目录=两本日记），日记的版本历史不会因为搬家断档
 - 她的"工具"用**目录联接（junction）**挂进新家，保持结构又不复制文件：
   - `D:\XunXi\.dsh` → `C:\Users\Lenovo\.dsh`（两本日记 / 状态 / 记忆索引）
   - `D:\XunXi\.bili-ai` → `C:\Users\Lenovo\.bili-ai`（凭据 / 额度 / 收藏）
