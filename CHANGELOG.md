@@ -114,6 +114,12 @@
 - 代码：`workspace` 配置 + `herWorkspace()`（index.js）、`persona.mjs` 改用工作区、`archiveTick()` 同时快照两个仓库
 - 新家 `D:\XunXi` 自己也是一个 git 仓库（只跟踪 `AGENTS.md`），家目录仓库只留日记与配置
 - 结果：QQ `/list` 的 `XunXi` 夹里出现「寻汐」（会话标题），能直接聊
+- 她的"工具"用**目录联接（junction）**挂进新家，保持结构又不复制文件：
+  - `D:\XunXi\.dsh` → `C:\Users\Lenovo\.dsh`（两本日记 / 状态 / 记忆索引）
+  - `D:\XunXi\.bili-ai` → `C:\Users\Lenovo\.bili-ai`（凭据 / 额度 / 收藏）
+  - `D:\XunXi\bili-whale` → 插件目录（`tools\bili.mjs` 那一整套）
+  - ⚠️ 新家的 `.gitignore` 必须把这三个联接目录排除，否则 `git add -A` 会试图把整个 `.dsh` 收进仓库 ✗
+  - 实测：`cd D:\XunXi\bili-whale\tools && node bili.mjs diary recent --days 1`、`memory index` 均正常 ✓
 
 ---
 
