@@ -21,9 +21,15 @@ const bvid = positional[0]
 const grid = (positional[1] ?? '3x3').toLowerCase()
 const outDir = positional[2] ?? path.join((process.env.USERPROFILE || process.env.HOME || '/'), '.dsh', 'shots', 'video')
 if (!bvid) { console.error('用法: node bili-watch.mjs <BV号> [列x行] [outDir] [--p N] [--uniform]'); process.exit(2) }
-const [cols, rows] = grid.split('x').map(Number)
+let [cols, rows] = grid.split('x').map(Number)
 if (!cols || !rows) { console.error('格子格式应是 3x3 这样'); process.exit(2) }
-const N = cols * rows
+// 2026-10-27 加 `--lyrics`：有些视频（尤其**歌**）的字都在画面上，九宫格太小看不清。
+//   这个模式抽 12 帧、强制等间隔（歌词是渐变的，不吸附转场），再裁两条"文字带"竖拼：
+//     LYRICS-MID = 画面中间 42%（歌词/标题常在这）· LYRICS-BOT = 下方 32%（字幕/歌词常在这）
+//   图更窄更竖、字更大 → read_image 读得清 ✓
+const LYRIC = argv.includes('--lyrics')
+let N = cols * rows
+if (LYRIC) { cols = 3; rows = 4; N = 12 }
 
 const cred = JSON.parse(fs.readFileSync(path.join((process.env.USERPROFILE || process.env.HOME || '/'), '.bili-ai', 'credentials.json'), 'utf8'))
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
@@ -112,7 +118,7 @@ const pickEvenly = (list, n) =>
 const uniform = Array.from({ length: N }, (_, i) => ((i + 0.5) * realDur) / N)
 let times = uniform
 let how = `等间隔（每 ${(realDur / N).toFixed(1)} 秒一帧）`
-if (!process.argv.includes('--uniform')) {
+if (!process.argv.includes('--uniform') && !LYRIC) {
   // 阈值阶梯：录屏/讲解类画面变化平缓，0.3 常只检出几处 → 逐级放宽
   let st = [], used = 0.3
   for (const th of [0.3, 0.15, 0.08]) { used = th; st = sceneTimes(mp4, th); if (st.length >= N) break }
@@ -174,6 +180,24 @@ try {
   console.log(`\nSHEET: ${sheet}`)
 } catch (e) {
   console.error('ffmpeg 抽帧失败：' + e.message); process.exit(6)
+}
+
+// ── 2026-10-27：歌词模式的两条文字带（歌的字常在中段，字幕的字常在底部，各来一条）──
+if (LYRIC) {
+  const bands = [
+    { name: 'LYRICS-MID', crop: 'crop=iw:ih*0.42:0:ih*0.29', desc: '画面中间 42%（歌词/大字标题常在这）' },
+    { name: 'LYRICS-BOT', crop: 'crop=iw:ih*0.30:0:ih*0.70', desc: '画面下方 30%（字幕/歌词常在这）' },
+  ]
+  for (const b of bands) {
+    const outImg = path.join(outDir, `${bvid}-${stamp}-${b.name.toLowerCase()}.jpg`)
+    try {
+      execFileSync(FFMPEG, ['-y', '-loglevel', 'error', '-i', path.join(tmp, 'f%02d.jpg'), '-vf',
+        `${b.crop},scale=1280:-1,tile=1x${N},${PC}`, '-frames:v', '1', outImg], { stdio: 'inherit' })
+      if (fs.existsSync(outImg)) console.log(`${b.name}: ${outImg}\n（${b.desc}，竖排 ${N} 条 —— 用 read_image 读字）`)
+    } catch {
+      console.log(`（${b.name} 生成失败，忽略——不影响 SHEET）`)
+    }
+  }
 }
 
 // 字幕条版：裁掉画面、只留底部字幕带再放大，竖着拼 N 条。

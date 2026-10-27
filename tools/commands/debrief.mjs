@@ -24,7 +24,12 @@ const bvid = argv.find((a) => !a.startsWith('--'))
 if (!bvid) { console.error('用法: node debrief.mjs <BV> [--bucket 30] [--top 5] [--grid 3x3] [--no-frames]'); process.exit(2) }
 const opt = {}
 for (let i = 0; i < argv.length; i += 1) {
-  if (argv[i].startsWith('--')) opt[argv[i].slice(2)] = argv[i + 1]?.startsWith('--') ? true : argv[++i]
+  if (!argv[i].startsWith('--')) continue
+  const k = argv[i].slice(2)
+  const v = argv[i + 1]
+  // 2026-10-27 修：裸旗标放在**最后**时（`debrief BV --lyrics`），旧写法会把它设成 undefined ✗
+  if (v === undefined || v.startsWith('--')) opt[k] = true
+  else { opt[k] = v; i += 1 }
 }
 const BUCKET = Number(opt.bucket ?? 30)
 const TOP = Number(opt.top ?? 5)
@@ -209,10 +214,32 @@ if (!opt['no-frames']) {
   try {
     // ⚠️ 必须用 fileURLToPath：用 URL.pathname 会把路径里的空格变成 %20（实测踩过）
     const watch = path.join(path.dirname(fileURLToPath(import.meta.url)), 'bili-watch.mjs')
-    const out = execFileSync(process.execPath, [watch, bvid, GRID], { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 })
-    for (const line of out.split('\n')) if (/^(SHEET|SUBS|实际画质|取帧方式)/.test(line)) console.log(line)
+    // 2026-10-27：`--lyrics` 透传给 bili-watch（抽 12 帧 + 两条文字带）
+    const wArgs = [watch, bvid, opt.lyrics ? '3x4' : GRID]
+    if (opt.lyrics) wArgs.push('--lyrics')
+    const out = execFileSync(process.execPath, wArgs, { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 })
+    for (const line of out.split('\n')) if (/^(SHEET|SUBS|LYRICS|实际画质|取帧方式)/.test(line)) console.log(line)
     sheet = (out.split('\n').find((l) => l.startsWith('SHEET:')) || '').slice(6).trim() || null
   } catch (e) { console.log(`（抽帧失败：${String(e.message).slice(0, 200)}）`) }
+
+  // ── ⑥a 歌词（--lyrics）：歌的"词"是文本，直接拿整首 ──
+  //   为什么：她听不到旋律；但一首歌唱了什么、想说什么，词能给她 ✓
+  //   顺序：在线歌词库（最完整）→ 画面文字带（bili-watch --lyrics 的输出）
+  if (opt.lyrics) {
+    console.log('\n══════════ ⑥a 歌词（这首歌在唱什么）══════════')
+    try {
+      const lyr = path.join(path.dirname(fileURLToPath(import.meta.url)), 'lyrics.mjs')
+      const out = execFileSync(process.execPath, [lyr, bvid], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 })
+      for (const line of out.split('\n')) {
+        if (/^(视频:|UP:|歌名:|匹配到:|已存:)/.test(line) || line.trim() === '' || /────────/.test(line)) continue
+        console.log(line)
+      }
+    } catch (e) {
+      const msg = String(e.stdout ?? '').split('\n').filter(Boolean).slice(-6).join('\n')
+      console.log(msg || `（没拿到在线歌词：${String(e.message).slice(0, 160)}）`)
+      console.log('（退路：LYRICS-MID / LYRICS-BOT 两张图里有屏幕上烧录的字，用 read_image 读）')
+    }
+  }
 
   // ── ⑥b 字幕条拼图（--substrip [每N秒]）──────────────────────────────
   // 为什么有它：2026-10-14 实测一条**没有官方字幕轨**的视频（硬字幕烧在画面里），

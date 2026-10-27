@@ -26,6 +26,7 @@ const map = {
   likes: ['commands/likes.mjs', '谁赞了她（「收到的赞」通知流，含点赞者 mid/昵称）：--hours 24 [--owner] [--json]'],
   fav: ['commands/fav.mjs', '收藏（我想留着）：<BV> [--reason …] [--dry|--go] / --list / --check；判据只是建议，不拦 ✓'],
   selftest: ['commands/selftest.mjs', '启动测试（装完先跑这个）：配置/凭据/登录态/目录/deps + 下一步两件事（未分组会话 · 完全权限）'],
+  lyrics: ['commands/lyrics.mjs', '歌词（歌在唱什么）：<BV号|歌名> [--raw] —— 从标题抠歌名，搜在线歌词，打印 + 存 ~/.dsh/shots/lyrics/'],
   deps: ['commands/deps.mjs', '依赖体检（装完先跑它）：cookie / ffmpeg / Node / 数据目录；--json 给 agent 判断'],
   login: ['commands/login.mjs', '登录态：默认报剩余天数 + 真验一次；import 整段粘贴重新导入（自动抠字段、真验、写凭据）'],
   diary: ['commands/diary.mjs', '她的一天（可见性）：show 人读摘要 / recent --days 2 只读最近几天（省上下文）/ log 记事件 / tail 最近事件'],
