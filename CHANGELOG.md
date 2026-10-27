@@ -118,6 +118,24 @@
   - 只做一件事：找到真正的 `bili-whale\tools\bili.mjs`，原样转发参数与退出码；不碰插件本体，删掉即回滚
   - 两个位置都被各自仓库的 `.gitignore` 挡住（不脏 git）
 - `persona commit` / `persona log` 现在**同时覆盖两个仓库**（工作区=人格卡，家目录=两本日记），日记的版本历史不会因为搬家断档
+
+### 十二、抽帧报「mjpeg 色彩范围不支持」—— 真根因是分P视频（2026-10-27）
+
+- 现象：她 10-26 中午深读 `BV1fYpn6SEk9` 时，`bili-watch` 抽帧失败：
+  `[mjpeg @ …] Non full-range YUV is non-standard, set strict_std_compliance to at most unofficial to use it.`
+- 排查过程：
+  1. 先测「限幅 YUV + ffmpeg 9」：普通 720P bt709/tv 源*单独*抽帧是成功的 → 不是普遍的编码器问题
+  2. 逐帧测同一支视频：**前 5 帧成功，t≥135s 全失败** → 不是颜色问题，是**时间点越界**
+  3. `ffprobe` 该文件：`duration=134.1s`，而 `view` 接口说 270s
+  4. `view.pages` 一看：**分 2 P，135s + 135s**；旧代码用 `view.data.cid`（第 1 P）+ `view.data.duration`（两 P 合计）
+  ⇒ 时间点按 270s 排到 255s，全落在第 1 P 之外 → 没有帧可编码，ffmpeg 报了一个**误导性的色彩范围错误** ✗
+- 修法（`tools/commands/bili-watch.mjs`）：
+  - 支持 `--p N` 选分P；默认第 1 P；打印分P信息（第几P / 本P时长 / 整片合计）
+  - 时长优先级：`playurl.timelength` → `ffprobe` 实际时长 → `view.duration`；与接口时长相差 >1s 时打印告警 ✓
+  - 顺便修了参数解析：`--p 2` 以前会被当成 `outDir` ✗
+  - 输出 JPEG 统一加 `scale=out_range=pc`（防御性：全范围 JPEG 更标准）
+  - 单帧失败不再整段崩：退化到「片尾前 1 秒」再试，仍不行用上一帧占位并打印提示
+- 实测：`BV1fYpn6SEk9` 3x3 → 成功出九宫格（9 帧均为第 1 P 的真实画面）；`--p 2` 也正常；单P视频 `BV1bGJR6HErW` 回归通过 ✓
 - 她的"工具"用**目录联接（junction）**挂进新家，保持结构又不复制文件：
   - `D:\XunXi\.dsh` → `C:\Users\Lenovo\.dsh`（两本日记 / 状态 / 记忆索引）
   - `D:\XunXi\.bili-ai` → `C:\Users\Lenovo\.bili-ai`（凭据 / 额度 / 收藏）
