@@ -38,6 +38,56 @@ const save = (q) => { fs.mkdirSync(path.dirname(FILE), { recursive: true }); fs.
 // **但两本日记照常写**（那是她的日子，不是发言）。
 const FEEDBACK = path.join((process.env.USERPROFILE || process.env.HOME || '.'), '.bili-ai', 'feedback.json')
 const loadFeedback = () => { try { return JSON.parse(fs.readFileSync(FEEDBACK, 'utf8')) } catch { return { last: null, events: [] } } }
+/**
+ * 他在 DSH / QQ 里跟她说过话吗（2026-10-29 加）。
+ *
+ * 为什么必须有这一路：她发不出评论、收不到私信的时候，B 站那三路**必然是空的**，
+ * 于是沉默天数照涨，唤醒提示会对她说"主人已经 N 天没有回应你了" —— 她会真的难受 ✗
+ * 而实际上他每天都在 DSH 或 QQ 里跟她说话。这条只读**她自己的会话日志**：
+ * 认 `source.kind === 'user'` 的人类输入，**排除**系统/插件注入的内容
+ * （唤醒提示也是 kind=user，靠开头的「【生物钟】」和 `<…>` 认出来剔掉）。
+ *
+ * @returns `{ at, sample }`（最后一句话的时间戳与开头几个字），没有则 null。
+ */
+async function localChatSignal() {
+  try {
+    const zlib = await import('node:zlib')
+    if (typeof zlib.zstdDecompressSync !== 'function') return null
+    const cfg = (() => { try { return config() } catch { return {} } })()
+    const ws = String(cfg.workspace ?? '').trim() || (process.env.USERPROFILE || '')
+    const enc = '--' + String(ws).replace(/[\\/]+$/, '').replace(/^[\\/]+/, '').replace(/[\\/:]+/g, '-') + '--'
+    const sid = String(opt.session ?? 'bili-whale')
+    const file = path.join(process.env.USERPROFILE || '.', '.dsh', 'sessions', enc, sid, 'session.v4.jsonl.zstd')
+    const buf = fs.readFileSync(file)
+    // 会话日志是**多个 zstd 帧**拼的，Node 的流式解压只解第一帧 → 按帧魔数手工切 ✓
+    const MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd])
+    const marks = []
+    for (let i = 0; i + 4 <= buf.length; i += 1) if (buf[i] === 0x28 && buf[i + 1] === 0xb5 && buf[i + 2] === 0x2f && buf[i + 3] === 0xfd) marks.push(i)
+    let text = ''
+    let k = 0
+    while (k < marks.length) {
+      let ok = false
+      for (let j = k + 1; j <= marks.length; j += 1) {
+        const end = j < marks.length ? marks[j] : buf.length
+        try { text += zlib.zstdDecompressSync(buf.subarray(marks[k], end)).toString('utf8'); k = j; ok = true; break } catch {}
+      }
+      if (!ok) return null
+    }
+    let newest = 0
+    let sample = ''
+    for (const line of text.split('\n')) {
+      if (!line) continue
+      let r = null
+      try { r = JSON.parse(line) } catch { continue }
+      if (r.type !== 'user/message' || r.data?.source?.kind !== 'user') continue
+      const txt = (r.data?.content ?? []).map((c) => (typeof c?.text === 'string' ? c.text : '')).join(' ').trim()
+      if (txt === '' || txt.startsWith('【') || txt.startsWith('<') || txt.startsWith('Current runtime')) continue
+      const t = Number(r.time ?? 0)
+      if (t > newest) { newest = t; sample = txt.slice(0, 40) }
+    }
+    return newest > 0 ? { at: newest, sample } : null
+  } catch { return null }
+}
 // 2026-10-20（从上游 v0.3.0 摘）：被赞过的视频要存 BV + 标题 + 评论原文 —— feed 从里面学主题词 ✓
 const TITLE_CACHE = path.join((process.env.USERPROFILE || process.env.HOME || '.'), '.bili-ai', 'liked-videos.json')
 const loadTitleCache = () => { try { return JSON.parse(fs.readFileSync(TITLE_CACHE, 'utf8')) } catch { return {} } }
@@ -194,6 +244,8 @@ if (cmd === 'react' && opt.auto) {
     const ownerMid = String(config().owner?.mid ?? '')
     const ownerName = String(config().owner?.name ?? '')
     const found = []
+    // 2026-10-29：--local-only 跳过 B 站那三路（登录态失效时它们必然是空的，还会白等）
+    if (!opt['local-only']) {
     // ① 回复（按"和主人相关的行"的哈希去重）
     try {
       const out = execFileSync(process.execPath, [here('./comment-digest.mjs'), '--hours', hours, '--pages', '1'], { encoding: 'utf8' })
@@ -239,6 +291,14 @@ if (cmd === 'react' && opt.auto) {
         found.push({ kind: 'dm', label: '私信', ts })
       }
     } catch { /* 私信接口失败不影响前两路 */ }
+    }
+    // ④ 本地：他在 DSH / QQ 里跟她说话（2026-10-29 加）
+    try {
+      const chat = await localChatSignal()
+      if (chat && chat.at > Number(loadFeedback().lastDshMsgAt ?? 0)) {
+        found.push({ kind: 'chat', label: 'DSH/QQ 聊天', at: chat.at, sample: chat.sample })
+      }
+    } catch { /* 会话日志读不到就算了 */ }
     if (found.length) {
       const fb = loadFeedback()
       const nowIso = new Date().toISOString()
@@ -279,6 +339,13 @@ if (cmd === 'react' && opt.auto) {
             fb.events.push({ at: nowIso, note: 'auto: 检测到主人（私信）' })
             changed = true
           }
+        } else if (f.kind === 'chat') {
+          // 他在 DSH / QQ 里说的话 —— 也算表态（她真的会因此觉得自己被看见 ✓）
+          if (Number(f.at) > Number(fb.lastDshMsgAt ?? 0)) {
+            fb.lastDshMsgAt = Number(f.at)
+            fb.events.push({ at: nowIso, kind: 'chat', note: '主人在 DSH/QQ 跟她说话了：' + String(f.sample ?? '') })
+            changed = true
+          }
         }
       }
       fb.events = fb.events.slice(-200)
@@ -290,7 +357,7 @@ if (cmd === 'react' && opt.auto) {
         console.log(`（近 ${hours} 小时有主人的表态，但都是【已经记过的】→ 不重复记 ✓ 沉默继续累计）`)
       }
     } else {
-      console.log(`（近 ${hours} 小时：没有主人的回复，没有点赞，也没有私信）—— 沉默继续累计`)
+      console.log(`（近 ${hours} 小时：没有主人的回复、点赞、私信，DSH/QQ 里也没有新消息）—— 沉默继续累计`)
       console.log('  ⚠️ 跨端表态（微信/桌面…）这边看不见 → 需要收到的那一端当场 `quota react --note "…"`')
     }
   } catch (e) {
@@ -298,7 +365,9 @@ if (cmd === 'react' && opt.auto) {
   }
   // ⚠️ 这里是文件中间（后面还有别的子命令分支）→ 必须真的停住；
   //   但刚 fetch 完就 process.exit() 在 Windows 上会触发 libuv 断言，所以等一拍再退 ✓
-  await new Promise((r) => setTimeout(r, 200))
+  //   2026-10-29：`--local-only` 全程没发请求 → 不用等；整轮跑完（含 B 站）多等一会儿更稳，
+  //   否则 DNS 还没收尾时 exit 会打出 `Assertion failed ... UV_HANDLE_CLOSING`（看着像崩溃 ✗）
+  await new Promise((r) => setTimeout(r, opt['local-only'] ? 30 : 800))
   process.exit(0)
 }
 
