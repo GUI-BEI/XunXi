@@ -153,14 +153,50 @@ try {
   } else if (cmd === 'read') {
     const dir = needBook()
     const ix = loadIndex(dir)
-    const no = Number(opt.block)
-    const b = ix.blocks.find((x) => x.no === no)
-    if (!b) { console.error(`没有第 ${no} 块（共 ${ix.blocks.length} 块）`); process.exit(2) }
-    const text = fs.readFileSync(path.join(dir, 'blocks', b.file), 'utf8')
-    const limit = Number(opt.chars ?? text.length)
-    console.log(`【${ix.book} · 块 ${b.no} · ${b.chapterTitle} · ${b.chars} 字】`)
-    console.log(text.slice(0, limit))
-    if (limit < text.length) console.log(`…（后面还有 ${text.length - limit} 字，--chars 可调）`)
+    // 2026-11-04：读多少由**她**定 —— 支持一次多块，但先把代价算给她看
+    //   实测：1 块 ≈ 6000 字 ≈ 1k tokens；她的上下文就那么大，读多少都是她的判断 ✓
+    let picked = []
+    if (typeof opt.blocks === 'string') {
+      const m = opt.blocks.match(/^(\d+)\s*[-–~]\s*(\d+)$/)
+      if (!m) { console.error('--blocks 格式：`2-6`'); process.exit(2) }
+      const a = Number(m[1])
+      const b = Number(m[2])
+      picked = ix.blocks.filter((x) => x.no >= Math.min(a, b) && x.no <= Math.max(a, b))
+    } else if (opt.count) {
+      // 从"下一块没读过的地方"开始，连续拿 N 块
+      const st = loadState(dir)
+      let noteFiles = []
+      try { noteFiles = fs.readdirSync(path.join(dir, 'notes')).filter((f) => f.endsWith('.md')) } catch {}
+      const done = new Set([...Object.keys(st.notes ?? {}).map(Number), ...noteFiles.map((f) => Number(f.replace('.md', '')))])
+      picked = ix.blocks.filter((x) => !done.has(x.no)).slice(0, Math.max(1, Number(opt.count)))
+    } else {
+      const no = Number(opt.block)
+      const one = ix.blocks.find((x) => x.no === no)
+      if (!one) { console.error(`没有第 ${no} 块（共 ${ix.blocks.length} 块）`); process.exit(2) }
+      picked = [one]
+    }
+    if (!picked.length) { console.error('这块区间里没有内容'); process.exit(2) }
+    const chars = picked.reduce((s, x) => s + x.chars, 0)
+    const tokens = Math.round(chars / 1.6)
+    const limit = Number(opt.chars ?? 0)
+    console.log(`【${ix.book} · ${picked.length} 块（${picked[0].no}–${picked[picked.length - 1].no}）· 共 ${chars.toLocaleString()} 字 ≈ ${tokens.toLocaleString()} tokens】`)
+    if (picked.length > 1) console.log(`  代价：这一下会占掉你上下文约 ${Math.round((tokens / 128000) * 100)}%（128k 算）。读多少是你的判断 ✓`)
+    for (const b of picked) {
+      const text = fs.readFileSync(path.join(dir, 'blocks', b.file), 'utf8')
+      console.log(`\n──── 块 ${b.no} · ${b.chapterTitle} · ${b.chars} 字 ────`)
+      console.log(limit > 0 ? text.slice(0, limit) : text)
+      if (limit > 0 && limit < text.length) console.log(`…（后面还有 ${text.length - limit} 字）`)
+    }
+  } else if (cmd === 'toc') {
+    // 只看目录：挑"我想读哪几个单元"，不读正文（很便宜）
+    const dir = needBook()
+    const ix = loadIndex(dir)
+    const limit = Number(opt.limit ?? 40)
+    const from = Number(opt.from ?? 1)
+    const rows = ix.chapters.filter((c) => c.no >= from).slice(0, limit)
+    console.log(`《${ix.book}》目录（${rows.length}/${ix.chapters.length} 个单元）`)
+    for (const c of rows) console.log(`  ${String(c.no).padStart(3)}. ${c.title.padEnd(24)} ${String(c.chars).padStart(6)} 字  块 ${c.blocks[0]}–${c.blocks[c.blocks.length - 1]}`)
+    if (rows.length < ix.chapters.length) console.log(`（后面还有 ${ix.chapters.length - rows[0].no - rows.length + 1} 个单元，--from N 继续看）`)
   } else if (cmd === 'note') {
     const dir = needBook()
     const no = Number(opt.block)
