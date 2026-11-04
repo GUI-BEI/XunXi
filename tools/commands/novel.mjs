@@ -88,6 +88,7 @@ function chunkText(text, limit) {
 
 // 章节过长时自动分段（2026-11-04 实测：这版电子书的第二、三部没有章节标题，
 //   整本书会被切成"序章 53 万字"这种怪物 → 笔记没法按章写，所以超长章节自动拆段）
+const CH_START = /^（开头）$/
 function segmentLongChapters(chapters, maxChars) {
   const out = []
   for (const ch of chapters) {
@@ -97,7 +98,8 @@ function segmentLongChapters(chapters, maxChars) {
     let buf = ''
     let seg = 1
     const flush = () => {
-      if (buf.trim()) out.push({ title: `${ch.title} · 段${seg}`, text: buf.trim() })
+      // 没有章节标题的书（整本只有一个"（开头）"）→ 段名就叫"第N节"，不要叫"（开头）· 段N"
+      if (buf.trim()) out.push({ title: CH_START.test(ch.title) ? `第${seg}节` : `${ch.title} · 段${seg}`, text: buf.trim() })
       seg += 1
       buf = ''
     }
