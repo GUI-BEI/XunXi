@@ -16,7 +16,11 @@ try { FFMPEG = requireFfmpeg() } catch (e) { console.error(String(e.message)); p
 const argv = process.argv.slice(2)
 const pFlag = argv.indexOf('--p')
 const pageArg = pFlag >= 0 ? argv[pFlag + 1] : null
-const positional = argv.filter((a, i) => !a.startsWith('--') && !(pFlag >= 0 && i === pFlag + 1))
+const rangeFlag = argv.indexOf('--range')
+const positional = argv.filter((a, i) =>
+  !a.startsWith('--') &&
+  !(pFlag >= 0 && i === pFlag + 1) &&
+  !(rangeFlag >= 0 && i === rangeFlag + 1))
 const bvid = positional[0]
 const grid = (positional[1] ?? '3x3').toLowerCase()
 const outDir = positional[2] ?? path.join((process.env.USERPROFILE || process.env.HOME || '/'), '.dsh', 'shots', 'video')
@@ -97,6 +101,13 @@ try {
   const d = Number(String(execFileSync(FFPROBE, ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=nw=1:nk=1', mp4], { encoding: 'utf8' })).trim())
   if (Number.isFinite(d) && d > 1) realDur = d
 } catch {}
+let vidW = 0
+let vidH = 0
+try {
+  const wh = String(execFileSync(FFPROBE, ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=p=0:s=x', mp4], { encoding: 'utf8' })).trim()
+  const [w, h] = wh.split('x').map(Number)
+  if (Number.isFinite(w) && Number.isFinite(h)) { vidW = w; vidH = h }
+} catch {}
 if (Math.abs(realDur - Number(duration)) > 1) console.log(`⚠️ 接口时长 ${duration}s，实际文件 ${realDur.toFixed(1)}s —— 按实际算（可能是分段/清晰度差异）`)
 
 // ── 取帧方式：优先"画面变化点"，不够再退回等间隔（2026-10-14 参考 K3 的做法）
@@ -115,20 +126,45 @@ const fmt = (s) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(Math
 const pickEvenly = (list, n) =>
   n <= 1 ? [list[0]] : Array.from({ length: n }, (_, i) => list[Math.round((i * (list.length - 1)) / (n - 1))])
 
-const uniform = Array.from({ length: N }, (_, i) => ((i + 0.5) * realDur) / N)
+// ── 2026-11-04：`--range 5:00-12:00` 只看一段（长视频"分段/续读"用）──
+//   为什么：12 分钟的视频只给 16 帧 = 45 秒一张，等于假装看过了 ✗
+//   分段看：一次只看 2–3 分钟，帧率立刻回到"每 10 秒一张"的水平 ✓
+function parseClock(s) {
+  const t = String(s ?? '').trim()
+  if (/^\d+(\.\d+)?$/.test(t)) return Number(t)
+  const m = t.match(/^(\d+):(\d{1,2})(?:\.(\d+))?$/)
+  if (!m) return NaN
+  return Number(m[1]) * 60 + Number(m[2]) + Number(m[3] ? `0.${m[3]}` : 0)
+}
+const rangeArg = (() => { const i = argv.indexOf('--range'); return i >= 0 ? String(argv[i + 1] ?? '') : '' })()
+let rangeStart = 0
+let rangeEnd = realDur
+if (rangeArg) {
+  const m = rangeArg.match(/^([^-]+)-(.+)$/)
+  if (!m) { console.error('--range 格式：`5:00-12:00` 或 `90-150`（秒）'); process.exit(2) }
+  const a = parseClock(m[1])
+  const b = parseClock(m[2])
+  if (!Number.isFinite(a) || !Number.isFinite(b) || b <= a) { console.error(`--range 解析失败：${rangeArg}`); process.exit(2) }
+  rangeStart = Math.max(0, Math.min(a, realDur - 1))
+  rangeEnd = Math.max(rangeStart + 1, Math.min(b, realDur))
+  console.log(`只看这一段: ${fmt(rangeStart)}–${fmt(rangeEnd)}（共 ${(rangeEnd - rangeStart).toFixed(0)} 秒，${N} 帧 → 每 ${((rangeEnd - rangeStart) / N).toFixed(1)} 秒一张）`)
+}
+const span = rangeEnd - rangeStart
+
+const uniform = Array.from({ length: N }, (_, i) => rangeStart + ((i + 0.5) * span) / N)
 let times = uniform
-let how = `等间隔（每 ${(realDur / N).toFixed(1)} 秒一帧）`
+let how = `等间隔（每 ${(span / N).toFixed(1)} 秒一帧${rangeArg ? '，仅限所选段' : ''}）`
 if (!process.argv.includes('--uniform') && !LYRIC) {
   // 阈值阶梯：录屏/讲解类画面变化平缓，0.3 常只检出几处 → 逐级放宽
   let st = [], used = 0.3
-  for (const th of [0.3, 0.15, 0.08]) { used = th; st = sceneTimes(mp4, th); if (st.length >= N) break }
+  for (const th of [0.3, 0.15, 0.08]) { used = th; st = sceneTimes(mp4, th).filter((t) => t >= rangeStart && t <= rangeEnd); if (st.length >= N) break }
 
   if (st.length > 0) {
     // 关键设计（2026-10-14 踩过两次才定）：
     //   ① 只按"变化点里均匀挑"会出事——转场全挤在开头，中段 50 秒一帧没有，叙事线直接断
     //   ② 只按等间隔会漏掉"只闪一两秒的关键画面"
     //   ⇒ 用**等间隔当骨架保证覆盖**，再把每帧**吸附到 ±半格内最近的变化点**（吸不到就保持等间隔）
-    const half = realDur / N / 2
+    const half = span / N / 2
     let snapped = 0
     times = uniform.map((u) => {
       const near = st.filter((s) => Math.abs(s - u) <= half)
@@ -138,7 +174,7 @@ if (!process.argv.includes('--uniform') && !LYRIC) {
     })
     how = `等间隔骨架（保覆盖）+ 吸附画面变化点（阈值 ${used} 检出 ${st.length} 处；${snapped}/${N} 帧吸到了变化点）`
   } else {
-    how = `纯等间隔（阈值 0.08 也未检出变化 → 每 ${(realDur / N).toFixed(1)} 秒一帧）`
+    how = `纯等间隔（阈值 0.08 也未检出变化 → 每 ${(span / N).toFixed(1)} 秒一帧）`
   }
 }
 console.log(`取帧方式: ${how}`)
@@ -197,6 +233,36 @@ if (LYRIC) {
     } catch {
       console.log(`（${b.name} 生成失败，忽略——不影响 SHEET）`)
     }
+  }
+}
+
+// ── 2026-11-04：OCR 通道（原生分辨率读字，不靠模型眯眼看缩略图）──
+//   她说过「工具会错，眼睛一般不会」——那就把眼睛做成工具：帧原图 → RapidOCR → 纯文本 ✓
+//   `--no-ocr` 可关；没装 python/rapidocr 时静默跳过（不影响出图）。
+if (!argv.includes('--no-ocr')) {
+  try {
+    const { ocrImages, cleanOcr } = await import('../lib/ocr.mjs')
+    // UP 主名与平台水印是固定噪声，用视频自己的信息剔掉
+    const extraNoise = [String(owner ?? ''), String(bvid), ...String(owner ?? '').split(/[_\-\s]+/).filter((x) => x.length >= 2)]
+    const frameFiles = times.map((_, i) => path.join(tmp, `f${String(i).padStart(2, '0')}.jpg`)).filter((f) => fs.existsSync(f))
+    const res = ocrImages(frameFiles)
+    if (!res.ok) {
+      console.log(`OCR: （跳过 —— ${res.error}）`)
+    } else {
+      const rows = cleanOcr(res.items, { times, extraNoise, imgW: vidW, imgH: vidH })
+      if (!rows.length) {
+        console.log('OCR: （这批帧里没读到文字）')
+      } else {
+        const ocrFile = path.join(outDir, `${bvid}-${stamp}-ocr.txt`)
+        const lines = rows.map((r) => `${r.at === null ? '--:--' : fmt(r.at)}  ${r.text}`)
+        fs.writeFileSync(ocrFile, lines.join('\n') + '\n', 'utf8')
+        console.log(`OCR: ${ocrFile}`)
+        for (const r of rows) console.log(`OCR| [${r.at === null ? '--:--' : fmt(r.at)}] ${r.text}`)
+        console.log(`（原生分辨率 OCR，共 ${rows.length}/${N} 帧读到字 —— 就用这些字，别去猜缩小后的图）`)
+      }
+    }
+  } catch (e) {
+    console.log(`OCR: （跳过 —— ${String(e.message).slice(0, 120)}）`)
   }
 }
 

@@ -75,7 +75,15 @@ line(fs.existsSync(DIARY) ? OK : WARN, '日记', fs.existsSync(DIARY) ? '已存�
 // ⑤ 依赖体检（直接调现成的 deps，别在这里重复实现 ✗）
 try {
   const BILI2 = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bili.mjs')
-  const out = execFileSync(process.execPath, [BILI2, 'deps'], { encoding: 'utf8', timeout: 60000 })
+  let out = ''
+  try {
+    out = execFileSync(process.execPath, [BILI2, 'deps'], { encoding: 'utf8', timeout: 60000 })
+  } catch (e) {
+    // 2026-11-04 修：deps 有红项时会以非零码退出，execFileSync 因此抛错 ——
+    //   旧代码把这个当成"没跑起来"，于是一旦 cookie 失效，体检那行永远是"没跑起来"✗
+    out = String(e?.stdout ?? '')
+    if (!out) throw e
+  }
   const reds = (String(out).match(/✗/g) ?? []).length
   line(reds === 0 ? OK : NO, '依赖体检（deps）', reds === 0 ? '全绿' : `${reds} 项红 —— 详见 \`node bili.mjs deps\``)
 } catch (e) {
@@ -83,6 +91,15 @@ try {
   line(WARN, '依赖体检（deps）', /EPERM|沙箱|sandbox/i.test(msg)
     ? '在 DSH 沙箱里跑不了子进程 → 换普通终端：`node bili.mjs deps`'
     : '没跑起来：' + msg.slice(0, 60))
+}
+
+// ⑤b 画面 OCR（可选）：装了她就能"读"画面上的字，而不是眯眼看缩略图
+try {
+  const { ocrInfo } = await import('../lib/ocr.mjs')
+  const info = ocrInfo()
+  line(info.ok ? OK : WARN, '画面 OCR（可选）', info.ok ? `可用（${info.python}）` : `没装 —— ${info.hint}`)
+} catch (e) {
+  line(WARN, '画面 OCR（可选）', '检测失败：' + String(e.message).slice(0, 60))
 }
 
 // ⑥ 告诉她/他 下一步该做什么（这一步是很多人卡住的地方）

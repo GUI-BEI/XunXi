@@ -1,6 +1,7 @@
 // 「看懂视频」一条龙：封面 + 简介 + 官方字幕 + 弹幕热区 + 热评 + 画面抽帧，六路齐出。
 //
 // 用法: node debrief.mjs <BV> [--bucket 30] [--top 5] [--grid 3x3] [--no-frames] [--substrip 每N秒] [--comments 8]
+//        [--lyrics] [--range 5:00-12:00] [--no-ocr]
 // 产出: 终端摘要 + 封面图 + 字幕 TXT + 弹幕对齐表 + 九宫格/字幕带（后三者交给 read_image / 模型合成）
 //
 // 设计（2026-10-14，主人定义为「看懂视频」大模块）：
@@ -217,8 +218,13 @@ if (!opt['no-frames']) {
     // 2026-10-27：`--lyrics` 透传给 bili-watch（抽 12 帧 + 两条文字带）
     const wArgs = [watch, bvid, opt.lyrics ? '3x4' : GRID]
     if (opt.lyrics) wArgs.push('--lyrics')
+    if (opt['no-ocr']) wArgs.push('--no-ocr')
+    if (typeof opt.range === 'string') wArgs.push('--range', opt.range)
     const out = execFileSync(process.execPath, wArgs, { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 })
-    for (const line of out.split('\n')) if (/^(SHEET|SUBS|LYRICS|实际画质|取帧方式)/.test(line)) console.log(line)
+    for (const line of out.split('\n')) {
+      if (/^(SHEET|SUBS|LYRICS|OCR|实际画质|取帧方式|只看这一段)/.test(line)) console.log(line)
+      else if (line.startsWith('OCR| ')) console.log('  ' + line.slice(5))   // 画面文字（原生分辨率 OCR）
+    }
     sheet = (out.split('\n').find((l) => l.startsWith('SHEET:')) || '').slice(6).trim() || null
   } catch (e) { console.log(`（抽帧失败：${String(e.message).slice(0, 200)}）`) }
 

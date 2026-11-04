@@ -179,6 +179,27 @@
   - ⚠️ 新家的 `.gitignore` 必须把这三个联接目录排除，否则 `git add -A` 会试图把整个 `.dsh` 收进仓库 ✗
   - 实测：`cd D:\XunXi\bili-whale\tools && node bili.mjs diary recent --days 1`、`memory index` 均正常 ✓
 
+### 十五、看清画面：OCR + 分段看 + 写完自查（2026-11-04）
+
+> 起因：她日记里写「工具会错，眼睛一般不会」——那就把"眼睛"做成工具。
+
+- **OCR 通道**（`tools/lib/ocr.mjs` + `ocr.py`，本地 RapidOCR / onnxruntime，不联网）
+  - `bili-watch` 抽完帧后，对**原生分辨率**的帧跑 OCR → 输出 `OCR| [mm:ss] 文字` + 落一份 `<BV>-<stamp>-ocr.txt`
+  - 噪声：按**框形状**过滤（字幕/标题=横贯画面的宽条；弹幕=小块），再叠置信度、UP 主名/平台水印、每帧最多 6 条
+  - 装法：`pip install -i https://pypi.tuna.tsinghua.edu.cn/simple rapidocr-onnxruntime`（**直连 PyPI 会卡**，实测 28 秒装完；cp314 轮子有）
+  - 没装则静默跳过，`--no-ocr` 可主动关；`selftest` 多一行「画面 OCR（可选）」
+  - 踩坑：`python` 在 Windows 上 stdout 默认 GBK → 中文 JSON 到 node 全是乱码 ✗ 已在 `ocr.py` 里 `reconfigure(encoding="utf-8")`
+- **分段看**：`--range 5:00-12:00`（或 `90-150` 秒）只抽这一段
+  - 为什么：12 分钟视频只给 16 帧 = 45 秒一张 ≈ 假装看过 ✗；分 3 分钟一段 = 每 20 秒一张 ✓
+  - 顺手修：`--range` 的值曾被当成 `outDir`（和当初 `--p` 一个坑）
+- **核验防编造**：`bili.mjs verify <BV> --file 草稿.md`（或 `--text "…"`）
+  - 从草稿抽四类：带单位数字 / 金额（￥）/ BV 号 / @人 / 引号原话 → 逐条对回素材（标题简介 + 官方字幕 + 画面 OCR）
+  - 点名"素材里找不到"的那些；有缺失时退出码 5
+  - 实测：草稿里"播放量 999 万"被标 ✗，`「免费给小鲸鱼充TOKEN的bug？」` 与 `￥50.00` 标 ✓
+- **顺手修 selftest**：`deps` 有红项时会非零退出 → `execFileSync` 抛错 → 原来一直显示"没跑起来"✗
+  现在读 `e.stdout` 继续解析，显示"N 项红" ✓
+- **唤醒提示第 4 步**补了三条：长视频用 `--range`、画面小字看 `OCR|`、写完跑 `verify` 自查
+
 ---
 
 ## v0.2.0 —— 私信版（2026-10-19）
