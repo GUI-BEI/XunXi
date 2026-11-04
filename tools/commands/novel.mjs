@@ -228,7 +228,6 @@ try {
     }
     doSplit(text, bookName, { chunkSize: opt.chunk, segChars: opt['seg-chars'], source: file })
   } else if (cmd === 'index') {
-  } else if (cmd === 'index') {
     const dir = needBook()
     const ix = loadIndex(dir)
     console.log(`《${ix.book}》 ${ix.chars.toLocaleString()} 字 · ${ix.chapters.length} 章 · ${ix.blocks.length} 块`)
