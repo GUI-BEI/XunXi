@@ -205,7 +205,8 @@ try {
   } else if (cmd === 'list') {
     // 书架：她一眼看到"有什么书、读到哪里了"（不设进度目标，只是让她知道有这些书）
     if (!fs.existsSync(ROOT)) { console.log(`（书架是空的：${ROOT}）`); process.exit(0) }
-    const dirs = fs.readdirSync(ROOT, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name)
+    // _src 是原文存放处（防手滑 read），不是书 ✓
+    const dirs = fs.readdirSync(ROOT, { withFileTypes: true }).filter((d) => d.isDirectory() && !d.name.startsWith('_')).map((d) => d.name)
     if (!dirs.length) { console.log(`（书架是空的：${ROOT}）`); process.exit(0) }
     console.log('书架：')
     for (const d of dirs) {
