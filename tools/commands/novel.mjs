@@ -22,7 +22,9 @@
 //   node bili.mjs novel skeleton [--name 三体]
 //   node bili.mjs novel recall "水滴" [--name 三体]
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
+import { execFileSync } from 'node:child_process'
 
 const HOME = process.env.USERPROFILE || process.env.HOME || '.'
 const ROOT = path.join(HOME, '.dsh', 'novels')
@@ -110,41 +112,122 @@ function segmentLongChapters(chapters, maxChars) {
 
 const fmt = (s) => String(s).padStart(4, '0')
 
-try {
-  if (cmd === 'split') {
-    const file = positional[0]
-    if (!file) { console.error('用法: novel split <小说.txt> [--name 书名] [--chunk 6000]'); process.exit(2) }
-    const bookName = name ?? path.basename(file).replace(/\.[^.]+$/, '')
-    const chunkSize = Number(opt.chunk ?? 6000)
-    const raw = fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n').replace(/\u3000/g, ' ')
-    const dir = bookDir(bookName)
-    fs.rmSync(dir, { recursive: true, force: true })
-    for (const sub of ['chapters', 'blocks', 'notes']) fs.mkdirSync(path.join(dir, sub), { recursive: true })
+/** 解码：先按 UTF-8，替代字符太多就按 GB18030（老 txt 常见） */
+function decodeText(buf) {
+  const utf8 = new TextDecoder('utf-8').decode(buf)
+  const bad = (utf8.match(/\uFFFD/g) ?? []).length
+  if (bad / Math.max(1, utf8.length) < 0.002) return { text: utf8, encoding: 'utf-8' }
+  try {
+    return { text: new TextDecoder('gb18030').decode(buf), encoding: 'gb18030' }
+  } catch {
+    return { text: utf8, encoding: 'utf-8（有乱码）' }
+  }
+}
 
-    const chapters = segmentLongChapters(splitChapters(raw), Number(opt['seg-chars'] ?? 12000))
-    const index = { book: bookName, source: file, chunkSize, chars: raw.replace(/\s/g, '').length, chapters: [], blocks: [] }
-    let bno = 1
-    chapters.forEach((ch, ci) => {
-      const cfile = path.join('chapters', `${fmt(ci + 1)}-${ch.title.replace(/[\\/:*?"<>|]/g, '_').slice(0, 24)}.txt`)
-      fs.writeFileSync(path.join(dir, cfile), ch.text, 'utf8')
-      const entry = { no: ci + 1, title: ch.title, chars: ch.text.replace(/\s/g, '').length, file: cfile, blocks: [] }
-      for (const piece of chunkText(ch.text, chunkSize)) {
-        const blk = `${fmt(bno)}.txt`
-        fs.writeFileSync(path.join(dir, 'blocks', blk), piece, 'utf8')
-        const b = { no: bno, chapter: ci + 1, chapterTitle: ch.title, chars: piece.replace(/\s/g, '').length, file: blk }
-        index.blocks.push(b)
-        entry.blocks.push(bno)
-        bno += 1
-      }
-      index.chapters.push(entry)
-    })
-    fs.writeFileSync(path.join(dir, 'index.json'), JSON.stringify(index, null, 2), 'utf8')
-    saveState(dir, { blocks: {}, notes: {} })
-    console.log(`✓ 已切分：${bookName}`)
-    console.log(`  字数 ${index.chars.toLocaleString()} · 章节 ${index.chapters.length} · 原文块 ${index.blocks.length}（每块 ≤${chunkSize} 字）`)
-    console.log(`  目录：${dir}`)
-    const first = index.chapters.slice(0, 6).map((c) => `${c.no}. ${c.title}（${c.chars} 字 / 块 ${c.blocks.join(',')}）`)
-    console.log('  前几章：\n    ' + first.join('\n    '))
+/** 从 EPUB 按 spine 顺序抽纯文本（解压用 Windows 自带 tar；临时目录用完就删） */
+function epubText(file) {
+  const tmp = path.join(os.tmpdir(), 'novel-epub-' + Date.now())
+  fs.mkdirSync(tmp, { recursive: true })
+  try {
+    execFileSync('tar', ['-xf', file, '-C', tmp], { stdio: 'ignore' })
+    const container = fs.readFileSync(path.join(tmp, 'META-INF', 'container.xml'), 'utf8')
+    const opfRel = container.match(/full-path="([^"]+)"/)[1]
+    const opfPath = path.join(tmp, decodeURIComponent(opfRel))
+    const opfDir = path.dirname(opfPath)
+    const opf = fs.readFileSync(opfPath, 'utf8')
+    const items = new Map()
+    for (const m of opf.matchAll(/<item\b[^>]*>/g)) {
+      const id = m[0].match(/id="([^"]+)"/)?.[1]
+      const href = m[0].match(/href="([^"]+)"/)?.[1]
+      if (id && href) items.set(id, decodeURIComponent(href))
+    }
+    const spine = [...opf.matchAll(/<itemref\b[^>]*idref="([^"]+)"/g)].map((m) => items.get(m[1])).filter(Boolean)
+    const strip = (html) => html
+      .replace(/<head[\s\S]*?<\/head>/gi, '')
+      .replace(/<style[\s\S]*?<\/style>/gi, '')
+      .replace(/<script[\s\S]*?<\/script>/gi, '')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/(p|div|h[1-6]|li|tr)>/gi, '\n')
+      .replace(/<[^>]+>/g, '')
+      .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    let out = ''
+    for (const rel of spine) {
+      const f = path.join(opfDir, rel)
+      if (!fs.existsSync(f)) continue
+      out += strip(fs.readFileSync(f, 'utf8')).split('\n').map((s) => s.trim()).filter(Boolean).join('\n') + '\n'
+    }
+    return out
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+}
+
+/** 真正的切分（split 与 import 共用） */
+function doSplit(rawIn, bookName, options = {}) {
+  const chunkSize = Number(options.chunkSize ?? 6000)
+  const segChars = Number(options.segChars ?? 12000)
+  const raw = rawIn.replace(/\r\n/g, '\n').replace(/\u3000/g, ' ')
+  const dir = bookDir(bookName)
+  fs.rmSync(dir, { recursive: true, force: true })
+  for (const sub of ['chapters', 'blocks', 'notes']) fs.mkdirSync(path.join(dir, sub), { recursive: true })
+  const chapters = segmentLongChapters(splitChapters(raw), segChars)
+  const index = { book: bookName, source: options.source ?? '', chunkSize, chars: raw.replace(/\s/g, '').length, chapters: [], blocks: [] }
+  let bno = 1
+  chapters.forEach((ch, ci) => {
+    const cfile = path.join('chapters', `${fmt(ci + 1)}-${ch.title.replace(/[\\/:*?"<>|]/g, '_').slice(0, 24)}.txt`)
+    fs.writeFileSync(path.join(dir, cfile), ch.text, 'utf8')
+    const entry = { no: ci + 1, title: ch.title, chars: ch.text.replace(/\s/g, '').length, file: cfile, blocks: [] }
+    for (const piece of chunkText(ch.text, chunkSize)) {
+      const blk = `${fmt(bno)}.txt`
+      fs.writeFileSync(path.join(dir, 'blocks', blk), piece, 'utf8')
+      const b = { no: bno, chapter: ci + 1, chapterTitle: ch.title, chars: piece.replace(/\s/g, '').length, file: blk }
+      index.blocks.push(b)
+      entry.blocks.push(bno)
+      bno += 1
+    }
+    index.chapters.push(entry)
+  })
+  fs.writeFileSync(path.join(dir, 'index.json'), JSON.stringify(index, null, 2), 'utf8')
+  saveState(dir, { blocks: {}, notes: {} })
+  const first = index.chapters.slice(0, 6).map((c) => `${c.no}. ${c.title}（${c.chars} 字 / 块 ${c.blocks.join(',')}）`)
+  console.log(`✓ 已切分：${bookName}`)
+  console.log(`  字数 ${index.chars.toLocaleString()} · 单元 ${index.chapters.length} · 原文块 ${index.blocks.length}（每块 ≤${chunkSize} 字）`)
+  console.log(`  目录：${dir}`)
+  console.log('  前几个单元：\n    ' + first.join('\n    '))
+  return index
+}
+
+
+try {
+  if (cmd === 'split' || cmd === 'import') {
+    const file = positional[0]
+    if (!file) {
+      console.error(cmd === 'import' ? '用法: novel import <书.epub|.txt> [--name 书名]' : '用法: novel split <小说.txt> [--name 书名] [--chunk 6000]')
+      process.exit(2)
+    }
+    if (!fs.existsSync(file)) { console.error('找不到文件：' + file); process.exit(2) }
+    const bookName = name ?? path.basename(file).replace(/\.[^.]+$/, '')
+    const isEpub = /\.epub$/i.test(file)
+    let text = ''
+    if (isEpub) {
+      console.log('正在解包 EPUB…')
+      text = epubText(file)
+    } else {
+      const dec = decodeText(fs.readFileSync(file))
+      text = dec.text
+      console.log(`编码：${dec.encoding}`)
+    }
+    if (!text.trim()) { console.error('抽不出正文（文件可能加密或不支持）'); process.exit(3) }
+    // import 会把抽好的纯文本存进 _src（原文不留在工作区，防手滑整本 read）
+    if (cmd === 'import') {
+      const srcDir = path.join(ROOT, '_src')
+      fs.mkdirSync(srcDir, { recursive: true })
+      const out = path.join(srcDir, `${bookName}.txt`)
+      fs.writeFileSync(out, text, 'utf8')
+      console.log(`原文已存：${out}`)
+    }
+    doSplit(text, bookName, { chunkSize: opt.chunk, segChars: opt['seg-chars'], source: file })
+  } else if (cmd === 'index') {
   } else if (cmd === 'index') {
     const dir = needBook()
     const ix = loadIndex(dir)
@@ -200,6 +283,8 @@ try {
   } else if (cmd === 'note') {
     const dir = needBook()
     const no = Number(opt.block)
+    // 2026-11-04 修：漏 --block 会写成 notes/0NaN.md（实测踩到）
+    if (!opt.block || !Number.isFinite(no) || no <= 0) { console.error('要指定块号：--block N（用 novel next 查下一块是哪个）'); process.exit(2) }
     let body = ''
     if (typeof opt.file === 'string') body = fs.readFileSync(opt.file, 'utf8')
     else if (typeof opt.text === 'string') body = opt.text
