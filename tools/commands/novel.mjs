@@ -283,19 +283,67 @@ try {
     if (rows.length < ix.chapters.length) console.log(`（后面还有 ${ix.chapters.length - rows[0].no - rows.length + 1} 个单元，--from N 继续看）`)
   } else if (cmd === 'note') {
     const dir = needBook()
+    const ix = loadIndex(dir)
     const no = Number(opt.block)
     // 2026-11-04 修：漏 --block 会写成 notes/0NaN.md（实测踩到）
     if (!opt.block || !Number.isFinite(no) || no <= 0) { console.error('要指定块号：--block N（用 novel next 查下一块是哪个）'); process.exit(2) }
+    const target = ix.blocks.find((x) => x.no === no)
+    const file = path.join(dir, 'notes', `${fmt(no)}.md`)
+    const stamp = new Date().toISOString().slice(0, 10)
+    const head = `> ${stamp} · ${ix.book} · 块 ${no} · ${target?.chapterTitle ?? ''}`
+    const st = loadState(dir)
+
+    // 2026-11-04：`--append` = 在旧笔记后面补一段（笔记**只追加，不覆盖**：
+    //   她想回看的是"我当时怎么想的"，改写会把那个自己抹掉）
+    if (typeof opt.append === 'string') {
+      if (!fs.existsSync(file)) { console.error(`第 ${no} 块还没有笔记，先正常写一条再 --append`); process.exit(2) }
+      const old = fs.readFileSync(file, 'utf8').trimEnd()
+      fs.appendFileSync(file, `\n\n> 补于 ${stamp}\n\n${opt.append.trim()}\n`, 'utf8')
+      st.notes[no] = st.notes[no] ?? new Date().toISOString()
+      st.appends = st.appends ?? {}
+      st.appends[no] = new Date().toISOString()
+      saveState(dir, st)
+      console.log(`✓ 已在第 ${no} 块笔记后面补了一段（${opt.append.trim().length} 字，原文未动）`)
+      process.exit(0)
+    }
+
     let body = ''
     if (typeof opt.file === 'string') body = fs.readFileSync(opt.file, 'utf8')
     else if (typeof opt.text === 'string') body = opt.text
-    if (!body.trim()) { console.error('要 --file 或 --text'); process.exit(2) }
-    fs.writeFileSync(path.join(dir, 'notes', `${fmt(no)}.md`), body.trim() + '\n', 'utf8')
-    const st = loadState(dir)
+    if (!body.trim()) { console.error('要 --file 或 --text（或者 --append "补一句"）'); process.exit(2) }
+    // 抬头一行：日期 + 书名 + 块号 + 章名（回看时能排时间线；她不用自己写）
+    const kept = body.trim()
+    const withHead = kept.startsWith('> ') ? kept : `${head}\n\n${kept}`
+    fs.writeFileSync(file, withHead + '\n', 'utf8')
     st.notes[no] = new Date().toISOString()
     st.blocks[no] = new Date().toISOString()
     saveState(dir, st)
-    console.log(`✓ 已记下第 ${no} 块的笔记（${body.trim().length} 字）→ notes/${fmt(no)}.md`)
+    console.log(`✓ 已记下第 ${no} 块的笔记（${kept.length} 字）→ notes/${fmt(no)}.md`)
+  } else if (cmd === 'notes') {
+    // 回看：先给索引（一行一块），要看正文再 read。2026-11-04 加
+    const dir = needBook()
+    const ix = loadIndex(dir)
+    const limit = Number(opt.limit ?? 30)
+    const kw = typeof opt.grep === 'string' ? opt.grep : null
+    const files = (() => { try { return fs.readdirSync(path.join(dir, 'notes')).filter((f) => /^\d+\.md$/.test(f)).sort() } catch { return [] } })()
+    if (!files.length) { console.log(`《${ix.book}》：还没有笔记`); process.exit(0) }
+    const rows = []
+    for (const f of files) {
+      const no = Number(f.replace('.md', ''))
+      const raw = fs.readFileSync(path.join(dir, 'notes', f), 'utf8')
+      const lines = raw.split('\n').map((s) => s.trim()).filter(Boolean)
+      const date = (lines[0] ?? '').match(/\d{4}-\d{2}-\d{2}/)?.[0] ?? ''
+      const summary = lines.find((l) => !l.startsWith('>') && !l.startsWith('#') && !l.startsWith('-'))?.slice(0, 40) ?? '（无摘要）'
+      if (kw && !raw.includes(kw)) continue
+      rows.push({ no, date, summary, chars: raw.replace(/\s/g, '').length, appends: (raw.match(/^> 补于/gm) ?? []).length })
+    }
+    if (!rows.length) { console.log(`（没有找到${kw ? `含「${kw}」的` : ''}笔记）`); process.exit(0) }
+    const shown = rows.slice(-limit) // 最近的在后 → 取最近的 limit 条
+    console.log(`《${ix.book}》我的笔记：${rows.length} 条${kw ? `（含「${kw}」）` : ''}${rows.length > shown.length ? `，这里给最近 ${shown.length} 条` : ''}`)
+    for (const r of shown) {
+      console.log(`  · 块 ${String(r.no).padStart(3)} ${r.date} ${r.chars}字${r.appends ? ` +补${r.appends}` : ''}  ${r.summary}`)
+    }
+    console.log('\n（想看全文：`novel read --block N` 看原文；笔记正文用 read 工具打开 notes/NNNN.md）')
   } else if (cmd === 'skeleton') {
     const dir = needBook()
     const ix = loadIndex(dir)

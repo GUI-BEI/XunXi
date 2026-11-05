@@ -26,7 +26,7 @@ const map = {
   likes: ['commands/likes.mjs', '谁赞了她（「收到的赞」通知流，含点赞者 mid/昵称）：--hours 24 [--owner] [--json]'],
   fav: ['commands/fav.mjs', '收藏（我想留着）：<BV> [--reason …] [--dry|--go] / --list / --check；判据只是建议，不拦 ✓'],
   selftest: ['commands/selftest.mjs', '启动测试（装完先跑这个）：配置/凭据/登录态/目录/deps + 下一步两件事（未分组会话 · 完全权限）'],
-  novel: ['commands/novel.mjs', '读书：split/index/read/note/skeleton/recall —— 长篇小说切块，原文不进主会话'],
+  novel: ['commands/novel.mjs', '读书：import/split/index/toc/read/note/notes/skeleton/recall —— 切块读，笔记可回看（notes）与追加（--append）'],
   verify: ['commands/verify.mjs', '核验防编造：<BV> --text "…" | --file draft.md —— 数字/BV/@人/引文/金额对回标题简介+官方字幕+画面 OCR'],
   lyrics: ['commands/lyrics.mjs', '歌词（歌在唱什么）：<BV号|歌名> [--raw] —— 从标题抠歌名，搜在线歌词，打印 + 存 ~/.dsh/shots/lyrics/'],
   deps: ['commands/deps.mjs', '依赖体检（装完先跑它）：cookie / ffmpeg / Node / 数据目录；--json 给 agent 判断'],
