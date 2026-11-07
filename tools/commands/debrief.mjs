@@ -287,5 +287,27 @@ if (opt.score) {
   console.log('  → 合计 __/20；**超过 12 就发**（不到 13 = 今天没有值得发的 ✓）')
   console.log('  （填完写进日记：日期 + BV + 分数 + 一句理由）')
 }
+// ── ⑥b 声音（--listen，2026-11-08 加）──
+//   文字里看不出"温柔还是敷衍"；这一段交给本地 Qwen2-Audio 去听：谁在说/什么情绪/有没有唱与配乐 ✓
+if (opt.listen) {
+  console.log('\n══════════ ⑦ 声音（听起来是什么样）══════════')
+  try {
+    const audioCmd = path.join(path.dirname(fileURLToPath(import.meta.url)), 'audio.mjs')
+    const out = execFileSync(process.execPath, [audioCmd, bvid], {
+      encoding: 'utf8',
+      maxBuffer: 32 * 1024 * 1024,
+      timeout: 20 * 60 * 1000,
+    })
+    for (const line of out.split('\n')) {
+      const t = line.trim()
+      if (!t || /^（用时|^音频：/.test(t)) continue
+      console.log(line)
+    }
+  } catch (e) {
+    console.log(`（听不了：${String(e.message).slice(0, 160)}）`)
+    console.log('  提示：需要 D:\\AIWork 里的 Qwen2-Audio（可以先用 `node bili.mjs audio <BV>` 单独试）')
+  }
+}
+
 console.log('\n══════════ 下一步（交给模型）══════════')
 console.log('用 read_image 看封面与九宫格，再把上面五路合起来写成结论 —— 脚本只备素材，不作判断。')

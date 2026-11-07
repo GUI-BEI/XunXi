@@ -200,6 +200,27 @@
   现在读 `e.stdout` 继续解析，显示"N 项红" ✓
 - **唤醒提示第 4 步**补了三条：长视频用 `--range`、画面小字看 `OCR|`、写完跑 `verify` 自查
 
+### 十七、听懂声音：本地 Qwen2-Audio（2026-11-08）
+
+> 她说过：「不是想听音乐消遣。是"听"能让判断多一路：这首歌是温柔的还是敷衍的，那段配音是想哭还是想笑，字里看不出来。」
+
+- **模型**：`Qwen2-Audio-7B-Instruct`，4bit 量化，8GB 显存可跑（RTX 4060 Laptop 实测）
+- **环境（全部在 D 盘，不碰 C 盘）**：
+  - `D:\AIWork\py311`：自建 Python 3.11.9（GitHub/官方源慢，用华为云镜像 4.5MB/s）
+  - `D:\AIWork\Qwen2-Audio-7B-Instruct`：15GB 权重（ModelScope，1.1MB/s）
+  - torch 2.5.1+cu121 走**阿里云 pytorch 轮子镜像**（官方源 0.1MB/s、阿里云 1.37MB/s）
+- **踩过的三个坑**：
+  1. 想复用 GPT-SoVITS 的 py3.9 运行时 → `transformers 4.46` 要 `tokenizers 0.20`，**没有 cp39 轮子** ✗ → 自建 3.11
+  2. ModelScope 对不存在的文件返回 **错误 JSON 但 HTTP 200** → `chat_template.json`/`processor_config.json` 变成假文件 → 加载报 `KeyError: 'chat_template'` → 下载后校验并删除
+  3. `audios=[路径字符串]` 会让 feature_extractor 去 `np.asarray(str)` 崩掉 → 改用 `soundfile` 读成 float32 数组；另外 python stdout 在 Windows 是 GBK，中文 JSON 到 node 全是乱码 → `reconfigure(encoding="utf-8")`
+- **命令**：
+  - `node bili.mjs audio <BV|文件> [--range a-b] [--segments "0:10-0:30,1:00-1:20"] [--ask "…"]`
+  - 长视频自动挑 3 段（每段 ≤22s）；单段推理约 3–8 秒，模型加载约 12 秒
+  - `debrief --listen` → 多一节「⑦ 声音」
+- **实测（同一段素材）**：
+  - 翻唱歌视频：「一位女性在唱歌和说话，语气轻松愉快，背景是轻快的配乐…从快速的语速、高昂的音量和笑声中能感受到」
+  - 对话段：「一个男性在说话，语气平静；背景有音乐和笑声，像是轻松的环境」
+- **边界**：旋律本身仍听不到；拿到的是"它听起来是什么样"（情绪+依据+有没有唱/配乐），不是音高谱
 ### 十六、读书：长篇小说不进主会话（2026-11-04）
 
 > 起因：阿墨想让她读《三体》。算过账：88 万字 ≈ 59 万 tokens，是 128k 上下文的 4.6 倍；
