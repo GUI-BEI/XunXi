@@ -49,7 +49,32 @@ function findVideo(target) {
   return files.length ? path.join(SHOTS, files[0].f) : null
 }
 
-const video = findVideo(String(src))
+const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+/** 只抓音频流（比整段视频省得多）；缓存到 TMP 里复用 */
+async function fetchAudio(bvid) {
+  const cached = path.join(TMP, `${bvid}.m4a`)
+  if (fs.existsSync(cached) && fs.statSync(cached).size > 100000) return cached
+  fs.mkdirSync(TMP, { recursive: true })
+  const h = { 'user-agent': UA, referer: 'https://www.bilibili.com/' }
+  const v = await (await fetch(`https://api.bilibili.com/x/web-interface/view?bvid=${bvid}`, { headers: h })).json()
+  if (v.code !== 0) throw new Error('取视频信息失败 ' + v.code)
+  const cid = v.data.pages?.[0]?.cid ?? v.data.cid
+  const pu = await (await fetch(`https://api.bilibili.com/x/player/playurl?bvid=${bvid}&cid=${cid}&fnval=16&fourk=1`, { headers: h })).json()
+  const audios = pu?.data?.dash?.audio ?? []
+  if (!audios.length) throw new Error('没有音频流（可能需要登录）')
+  const best = audios.sort((a, b) => (b.bandwidth ?? 0) - (a.bandwidth ?? 0))[0]
+  const url = best.baseUrl || best.base_url
+  const buf = Buffer.from(await (await fetch(url, { headers: h })).arrayBuffer())
+  if (buf.length < 50000) throw new Error('音频下载太小，可能被拦')
+  fs.writeFileSync(cached, buf)
+  return cached
+}
+
+let video = findVideo(String(src))
+if (!video && /^BV[0-9A-Za-z]{10}$/.test(String(src))) {
+  console.log('本地没有这条视频，只抓音频流…')
+  try { video = await fetchAudio(String(src)) } catch (e) { console.error('✗ ' + String(e.message).slice(0, 160)); process.exit(4) }
+}
 if (!video) { console.error(`找不到音视频：${src}（先跑一次 bili-watch）`); process.exit(4) }
 const bvid = (path.basename(video).match(/BV[0-9A-Za-z]{10}/) ?? [''])[0]
 
@@ -70,11 +95,35 @@ const MUSIC_ZONE = /音乐|翻唱|演奏|MV|VOCALOID|原创音乐/
 const MUSIC_WORDS = /翻唱|cover|COVER|歌曲|单曲|原曲|二创|填词|改编|MV|PV|纯音乐|伴奏|BGM|ost|主题曲|片头|片尾|remix/i
 const isMusic = MUSIC_ZONE.test(tname) || MUSIC_WORDS.test(title)
 console.log(`《${title || path.basename(video)}》${tname ? ' · 分区：' + tname : ''}`)
-console.log(isMusic ? '判定：歌曲类（走音乐分析）' : '判定：**不像歌**（普通视频不做音乐/歌词分析）')
+if (isMusic) console.log('判定：歌曲类（走音乐分析）')
 if (!isMusic && !opt.force) {
-  console.log('\n普通视频里 BGM 只要旋律，不需要歌词 —— 所以这里不输出歌词，也不逐句转写。')
-  console.log('真想强行分析，加 --force。')
-  process.exit(0)
+  // 2026-11-08：标题/分区没写"歌"，不代表不是歌（实测 BV1bGJR6HErW 就是这样）。
+  //   让他自己听一句："有唱歌吗？" —— 一次约 25 秒，只在"拿不准"的时候问。
+  console.log('\n标题/分区没写是歌，先听一句确认…')
+  try {
+    fs.mkdirSync(TMP, { recursive: true })
+    const probe = path.join(TMP, `probe-${bvid || 'local'}.wav`)
+    if (!fs.existsSync(probe)) {
+      execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-ss', '5', '-t', '20', '-i', video, '-vn', '-ac', '1', '-ar', '16000', probe], { stdio: 'ignore' })
+    }
+    const r = execFileSync(PY, [QWEN_SCRIPT, probe, '--model', QA_MODEL, '--ask',
+      '这段音频里有没有人在唱歌？只回答一句：有唱歌/没有唱歌，并说明有没有人说话、有没有音乐。', '--json'], {
+      encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, timeout: 10 * 60 * 1000,
+      env: { ...process.env, TRANSFORMERS_VERBOSITY: 'error', HF_HUB_DISABLE_PROGRESS_BARS: '1', PYTHONWARNINGS: 'ignore' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    const ans = (JSON.parse(r)[0]?.answer ?? '').trim()
+    console.log('  它说：' + ans)
+    if (!/有唱歌/.test(ans) || /没有唱歌/.test(ans)) {
+      console.log('\n判定：不是歌 —— 普通视频的 BGM 只要旋律，不输出歌词、也不逐句转写 ✓')
+      process.exit(0)
+    }
+    console.log('判定：听到了唱歌 → 按歌曲处理')
+  } catch (e) {
+    console.log('（确认失败：' + String(e.message).slice(0, 80) + '）')
+    console.log('普通视频里 BGM 只要旋律，不需要歌词 —— 这里不输出歌词。真要强行分析，加 --force。')
+    process.exit(0)
+  }
 }
 
 fs.mkdirSync(TMP, { recursive: true })
@@ -144,6 +193,8 @@ console.log(`听写的字能在库版里找到 ${(ratio * 100).toFixed(0)}%${lib
 if (libLyrics && !useHeard) {
   console.log('（以库版为准 —— 带时间轴，听写只用来核对）')
   console.log(libLyrics.split('\n').slice(0, 40).join('\n'))
+} else if (!heard.length) {
+  console.log('（听不出歌词 —— 更像纯音乐/哼唱，没有可转写的字；上面那段「听起来是什么样」就是全部信息）')
 } else {
   console.log('（以**听写**为准 —— 库版对不上，大概率是改过词的版本）')
   for (const s of heard.slice(0, 24)) console.log(`[${fmt(s.start)}] ${s.text}`)

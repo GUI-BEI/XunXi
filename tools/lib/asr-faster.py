@@ -5,6 +5,7 @@
 """
 import argparse
 import json
+import re
 import sys
 
 try:
@@ -53,14 +54,27 @@ def main() -> int:
             condition_on_previous_text=False,
             word_timestamps=True,
         )
+        # 2026-11-08：纯音乐/静音段上 whisper 会背"字幕组台词"（实测：优优独播剧场、Amara、明镜…）
+        #   黑名单 + 短段直接丢
+        HALLUCINATION = re.compile(
+            r"优优独播|独播剧场|字幕由|字幕组|Amara\.org|明镜|新唐人|感谢观看|谢谢观看|"
+            r"请订阅|点赞订阅|QQ群|微信|微信公众号|本字幕"
+        )
         out = []
         for s in segments:
+            text = (s.text or "").strip()
+            if not text:
+                continue
+            if s.end - s.start < 0.5:
+                continue
+            if HALLUCINATION.search(text):
+                continue
             words = [{"w": w.word, "start": round(w.start, 2), "end": round(w.end, 2), "p": round(w.probability, 3)} for w in (s.words or [])]
             out.append(
                 {
                     "start": round(s.start, 2),
                     "end": round(s.end, 2),
-                    "text": (s.text or "").strip(),
+                    "text": text,
                     "avg_logprob": round(getattr(s, "avg_logprob", 0.0) or 0.0, 3),
                     "no_speech": round(getattr(s, "no_speech_prob", 0.0) or 0.0, 3),
                     "words": words,
