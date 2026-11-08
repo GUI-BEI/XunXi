@@ -14,7 +14,12 @@ import crypto from 'node:crypto'
 const argv = process.argv.slice(2)
 const opt = {}
 for (let i = 0; i < argv.length; i += 1) {
-  if (argv[i].startsWith('--')) opt[argv[i].slice(2)] = argv[i + 1]?.startsWith('--') ? true : argv[++i]
+  if (argv[i].startsWith('--')) {
+    const k = argv[i].slice(2)
+    const v = argv[i + 1]
+    if (v === undefined || v.startsWith('--')) opt[k] = true
+    else { opt[k] = v; i += 1 }
+  }
 }
 const N = Number(opt.n ?? 6)
 const PER = Number(opt.per ?? 2)
@@ -183,7 +188,14 @@ const playBonus = (x) => {
   const penalty = x.play < MIN_PLAYS ? -1.5 : 0                        // 没到门槛的小扣分（软，不删）
   return base + penalty
 }
-const hitsOf = (title) => prefTokens.filter((p) => p.tokens.some((tok) => title.includes(tok))).map((p) => p.label)
+const hitsOfTitle = (title) => prefTokens.filter((p) => p.tokens.some((tok) => String(title).toLowerCase().includes(String(tok).toLowerCase()))).map((p) => p.label)
+// 搜索来源的条目：它的搜索词本身就是"命中"（否则按她口味搜来的一大批会被算成没命中 ✗）
+const hitsOf = (x) => {
+  const byTitle = hitsOfTitle(x.t)
+  const kw = String(x.kw ?? '')
+  const bySearch = prefs.includes(kw) && !byTitle.includes(kw) ? [kw] : []
+  return [...byTitle, ...bySearch]
+}
 const densityOf = (x) => Math.log10(1 + x.dm / Math.max(30, x.d))
 // 她收藏过的 UP —— 门槛对他们不生效
 let favUPs = new Set()
@@ -201,7 +213,7 @@ const uniq = [...new Map(pool.map((x) => [x.bv, x])).values()]
   // 2026-11-08：播放量只做"软偏向"——硬门槛会把清单砍到只剩 1 条（实测）
   //   只砍极低的（<2000）；低播放的扣分，高播放的加分，偏好仍然说话最重
   .filter((x) => x.kw === '关注' || favUPs.has(String(x.up ?? '')) || Number(x.play ?? 0) >= Math.min(2000, MIN_PLAYS))
-const scoreOf = (x) => densityOf(x) * 3 + hitsOf(x.t).length * 4 + boostOf(x.t) + playBonus(x)
+const scoreOf = (x) => densityOf(x) * 3 + hitsOf(x).length * 4 + boostOf(x.t) + playBonus(x)
 // 2026-11-08：口味优先、播放量做次位 —— 否则 8900 万播放的"八段锦"会把她真正感兴趣的东西挤掉
 uniq.sort((a, b) => {
   const ha = hitsOf(a.t).length
@@ -209,7 +221,7 @@ uniq.sort((a, b) => {
   if (ha !== hb) return hb - ha
   return scoreOf(b) - scoreOf(a)
 })
-for (const x of uniq) { x._hits = hitsOf(x.t); x._score = scoreOf(x) }
+for (const x of uniq) { x._hits = hitsOf(x); x._score = scoreOf(x) }
 
 // 多样性：同一"命中和类"最多 PER 条；完全没命中的最多 1 条（防凑数 ✗）
 const kindUsed = {}
@@ -254,4 +266,11 @@ for (const x of finalList) {
   console.log(`  ${String(shown).padStart(2)}. ${x.bv}  ${String(x.d).padStart(4)}s  弹幕${String(x.dm).padStart(7)}  播放${String(x.play).padStart(9)}  ${x.t.slice(0, 40)}  @${x.up}${x._filler ? " ［补位］" : ""} ${x._hits.length ? "[" + x._hits.join("+") + "]" : ""}`)
 }
 console.log(`\n播放分布（这 ${shown} 条）: ${playStats(finalList.slice(0, shown))}`)
+if (opt.dump) {
+  const dumpRows = uniq.map((x) => ({ bv: x.bv, t: x.t, up: x.up, kw: x.kw, play: Number(x.play ?? 0), dm: Number(x.dm ?? 0), d: Number(x.d ?? 0), hits: x._hits ?? [], filler: !!x._filler }))
+  const dumpFile = path.join(process.env.USERPROFILE || '.', '.dsh', 'feed-dump.json')
+  fs.writeFileSync(dumpFile, JSON.stringify(dumpRows, null, 1), 'utf8')
+  console.log(`（候选池已 dump：${dumpFile}，共 ${dumpRows.length} 条）`)
+}
+
 console.log('\n看完跑：node bili.mjs debrief <BV>   → 然后把"想法"写进日记的「想说」区（不发）')
