@@ -40,12 +40,17 @@ def main() -> int:
         return 4
 
     try:
+        # 2026-11-08：环境声（风声/雨声/脚步）会被硬转成字 —— 这是幻觉，不是信息。
+        #   三道闸：VAD 先掐掉非语音段 + no_speech_prob 阈值 + avg_logprob 阈值
         segments, info = model.transcribe(
             args.wav,
             language=args.lang,
             beam_size=args.beam,
             vad_filter=True,
-            vad_parameters={"min_silence_duration_ms": 300},
+            vad_parameters={"min_silence_duration_ms": 500, "threshold": 0.5},
+            no_speech_threshold=0.6,
+            log_prob_threshold=-0.8,
+            condition_on_previous_text=False,
             word_timestamps=True,
         )
         out = []
