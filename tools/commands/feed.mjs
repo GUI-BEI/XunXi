@@ -182,6 +182,7 @@ const prefTokens = prefs.map((p) => ({
 const FEED = (() => { try { return config().feed ?? {} } catch { return {} } })()
 const MIN_PLAYS = Number(opt['min-plays'] ?? FEED.minPlays ?? 10000)
 const PLAY_WEIGHT = Number(FEED.playWeight ?? 1.5)
+const MAX_DUR = Number(opt['max-dur'] ?? FEED.maxDur ?? 600)   // 秒；超长视频不进清单（深读太吃上下文）
 const playBonus = (x) => {
   if (!x.play || x.play <= 0) return 0
   const base = Math.max(0, Math.log10(1 + x.play) - 3) * PLAY_WEIGHT   // 1千→0 · 1万→1.5 · 10万→3 · 100万→4.5
@@ -213,6 +214,8 @@ const uniq = [...new Map(pool.map((x) => [x.bv, x])).values()]
   // 2026-11-08：播放量只做"软偏向"——硬门槛会把清单砍到只剩 1 条（实测）
   //   只砍极低的（<2000）；低播放的扣分，高播放的加分，偏好仍然说话最重
   .filter((x) => x.kw === '关注' || favUPs.has(String(x.up ?? '')) || Number(x.play ?? 0) >= Math.min(2000, MIN_PLAYS))
+  // 2026-11-08：时长上限（默认 10 分钟）—— 太长的深读一次就把上下文吃光
+  .filter((x) => Number(x.d ?? 0) > 0 ? Number(x.d) <= MAX_DUR : true)
 const scoreOf = (x) => densityOf(x) * 3 + hitsOf(x).length * 4 + boostOf(x.t) + playBonus(x)
 // 2026-11-08：口味优先、播放量做次位 —— 否则 8900 万播放的"八段锦"会把她真正感兴趣的东西挤掉
 uniq.sort((a, b) => {
@@ -251,7 +254,7 @@ const playStats = (arr) => {
   return `中位 ${mid.toLocaleString()} · 最小 ${v[0].toLocaleString()} · 最大 ${v[v.length - 1].toLocaleString()}`
 }
 console.log(`偏好（来自日记）: ${prefs.join(' · ')}`)
-console.log(`播放门槛: ${MIN_PLAYS.toLocaleString()}（关注/收藏过的 UP 例外）· 播放加成权重 ${PLAY_WEIGHT}`)
+console.log(`播放门槛: ${MIN_PLAYS.toLocaleString()}（关注/收藏过的 UP 例外）· 播放加成权重 ${PLAY_WEIGHT} · 时长上限 ${Math.round(MAX_DUR / 60)} 分钟`)
 console.log(`反馈回流: 被赞 ${likedEvents.length} 条 · 她收藏 ${favItems.length} 条 → 学会 ${learnedTokens.length} 个主题词`)
 console.log(`已看过/已评论过（已排除）: ${seen.size} 个 BV`)
 console.log(`候选池: ${pool.length} 条 → 去重去已看后 ${uniq.length} 条\n`)
