@@ -31,6 +31,11 @@ const H = {
 }
 
 const since = Math.floor(Date.now() / 1000) - HOURS * 3600
+// 2026-11-10：用的是主人的账号 → 点赞也要闸住（那也是以他的名义）
+if (config().share?.canLike === false && !process.argv.includes('--readonly')) {
+  console.error('⛔ 现在是只读：用的是主人的账号，不能点赞（读赞记录用 --readonly）')
+  process.exit(3)
+}
 const ownerMid = String(config().owner?.mid ?? '')
 const ownerName = String(config().owner?.name ?? '')
 
