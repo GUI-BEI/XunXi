@@ -220,6 +220,7 @@ if (!opt['no-frames']) {
     if (opt.lyrics) wArgs.push('--lyrics')
     if (opt['no-ocr']) wArgs.push('--no-ocr')
     if (typeof opt.range === 'string') wArgs.push('--range', opt.range)
+    if (typeof opt.frames === 'string') wArgs.push('--frames', opt.frames)
     const out = execFileSync(process.execPath, wArgs, { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 })
     for (const line of out.split('\n')) {
       if (/^(SHEET|SUBS|LYRICS|OCR|实际画质|取帧方式|只看这一段)/.test(line)) console.log(line)

@@ -110,6 +110,54 @@ try {
 } catch {}
 if (Math.abs(realDur - Number(duration)) > 1) console.log(`⚠️ 接口时长 ${duration}s，实际文件 ${realDur.toFixed(1)}s —— 按实际算（可能是分段/清晰度差异）`)
 
+// ── 字幕驱动的取帧（2026-11-10）──
+//   有登录态时，B站会给 AI 字幕：一句话对应一段时间，**句子的边界就是"内容在变"的地方**。
+//   比纯画面变化更贴内容（讲课时画面可能几十秒不动，但话一直在变）。
+//   拿不到字幕（没登录 / 这视频没有 AI 字幕）→ 自动退回原来的"画面变化点 + 等间隔" ✓
+const SUBS_DIR = path.join(process.env.USERPROFILE || process.env.HOME || '.', '.dsh', 'shots', 'subs')
+function subtitleSegments(bv) {
+  try {
+    const cached = fs.existsSync(SUBS_DIR)
+      ? fs.readdirSync(SUBS_DIR).filter((f) => f.startsWith(bv) && f.endsWith('.json'))
+        .map((f) => ({ f, t: fs.statSync(path.join(SUBS_DIR, f)).mtimeMs }))
+        .sort((a, b) => b.t - a.t)[0]
+      : null
+    // 缓存 2 小时内直接用；否则重新拉（auth_key 会过期，但 JSON 已经落盘就不用再下）
+    if (cached && Date.now() - cached.t < 2 * 3600 * 1000) {
+      const j = JSON.parse(fs.readFileSync(path.join(SUBS_DIR, cached.f), 'utf8'))
+      const body = Array.isArray(j.body) ? j.body : []
+      if (body.length) return body
+    }
+    const script = path.join(path.dirname(fileURLToPath(import.meta.url)), 'subtitles.mjs')
+    execFileSync(process.execPath, [script, bv], { encoding: 'utf8', timeout: 120000, stdio: ['ignore', 'pipe', 'pipe'] })
+    const again = fs.readdirSync(SUBS_DIR).filter((f) => f.startsWith(bv) && f.endsWith('.json'))
+      .map((f) => ({ f, t: fs.statSync(path.join(SUBS_DIR, f)).mtimeMs })).sort((a, b) => b.t - a.t)[0]
+    if (!again) return []
+    const j = JSON.parse(fs.readFileSync(path.join(SUBS_DIR, again.f), 'utf8'))
+    return Array.isArray(j.body) ? j.body : []
+  } catch { return [] }
+}
+
+/** 按句子中点取帧：句子少于 N 就每句一帧、再补等间隔；多于 N 就按句序均匀挑 */
+function subtitleTimes(segs, n, start, end) {
+  const inRange = segs
+    .map((s) => ({ from: Number(s.from), to: Number(s.to ?? s.from), text: String(s.content ?? '').trim() }))
+    .filter((s) => s.text.length >= 2 && s.to > start && s.from < end)
+  if (!inRange.length) return []
+  const pick = []
+  if (inRange.length <= n) {
+    for (const s of inRange) pick.push((Math.max(s.from, start) + Math.min(s.to, end)) / 2)
+    const base = Array.from({ length: n }, (_, i) => start + ((i + 0.5) * (end - start)) / n)
+    for (const b of base) if (pick.length < n) pick.push(b)
+  } else {
+    for (let i = 0; i < n; i += 1) {
+      const s = inRange[Math.round((i * (inRange.length - 1)) / Math.max(1, n - 1))]
+      pick.push((Math.max(s.from, start) + Math.min(s.to, end)) / 2)
+    }
+  }
+  return [...new Set(pick.map((x) => Math.max(start, Math.min(end - 0.5, x))))].sort((a, b) => a - b).slice(0, n)
+}
+
 // ── 取帧方式：优先"画面变化点"，不够再退回等间隔（2026-10-14 参考 K3 的做法）
 // 画面变化由 ffmpeg 的 scene 过滤器给出：空跑一次，把 pts_time 抓出来，再从中均匀挑 N 个。
 // 好处：等间隔会漏掉"只出现一两秒的关键画面"，画面变化点天然落在场景切换处。
@@ -152,9 +200,26 @@ if (rangeArg) {
 const span = rangeEnd - rangeStart
 
 const uniform = Array.from({ length: N }, (_, i) => rangeStart + ((i + 0.5) * span) / N)
+// 2026-11-10：首选"字幕驱动"（要登录态）；--frames=scene 可强制回老办法
+const fMode = (() => {
+  const i = argv.indexOf('--frames')
+  return i >= 0 && argv[i + 1] ? String(argv[i + 1]) : 'auto'
+})()
+let usedSubs = false
 let times = uniform
 let how = `等间隔（每 ${(span / N).toFixed(1)} 秒一帧${rangeArg ? '，仅限所选段' : ''}）`
-if (!process.argv.includes('--uniform') && !LYRIC) {
+if (fMode !== 'scene' && !LYRIC) {
+  const segs = bvid ? subtitleSegments(bvid) : []
+  const bySubs = segs.length ? subtitleTimes(segs, N, rangeStart, rangeEnd) : []
+  if (bySubs.length >= Math.min(N, 3)) {
+    times = bySubs
+    usedSubs = true
+    how = `字幕驱动（${segs.length} 句里挑 ${bySubs.length} 句，取每句中点 / 再吸到句子内的画面变化）`
+  } else if (fMode === 'subs') {
+    console.log('（--frames=subs 但拿不到 AI 字幕 —— 这视频没有字幕轨，或没登录）')
+  }
+}
+if (!usedSubs && !process.argv.includes('--uniform') && !LYRIC) {
   // 阈值阶梯：录屏/讲解类画面变化平缓，0.3 常只检出几处 → 逐级放宽
   let st = [], used = 0.3
   for (const th of [0.3, 0.15, 0.08]) { used = th; st = sceneTimes(mp4, th).filter((t) => t >= rangeStart && t <= rangeEnd); if (st.length >= N) break }
