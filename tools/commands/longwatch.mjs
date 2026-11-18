@@ -14,11 +14,15 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { transcribeChunked } from '../lib/asr-transcribe.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const HOME = process.env.USERPROFILE || process.env.HOME || '.'
 const ROOT = path.join(HOME, '.dsh', 'shots', 'longwatch')
 const SUBS = path.join(HOME, '.dsh', 'shots', 'subs')
+const ASR_PY = process.env.ASR_PYTHON || 'D:\\AIWork\\GPT-SoVITS-v2pro-20250604\\runtime\\python.exe'
+const ASR_SCRIPT = path.join(HERE, '..', 'lib', 'asr-faster.py')
+const ASR_MODEL = process.env.ASR_MODEL || 'D:\\AIWork\\faster-whisper-large-v3'
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
 
 const argv = process.argv.slice(2)
@@ -60,6 +64,23 @@ async function ensureVideo() {
   return videoFile
 }
 
+/** 音频流（视频流没有音轨！听写必须用它）—— 也只下一次 */
+async function ensureAudio() {
+  const audioFile = path.join(ROOT, bvid + '.m4a')
+  if (fs.existsSync(audioFile) && fs.statSync(audioFile).size > 100000) return audioFile
+  const h = { 'user-agent': UA, referer: 'https://www.bilibili.com/' }
+  const v = await (await fetch(`https://api.bilibili.com/x/web-interface/view?bvid=${bvid}`, { headers: h })).json()
+  const cid = v.data.pages?.[0]?.cid ?? v.data.cid
+  const pu = await (await fetch(`https://api.bilibili.com/x/player/playurl?bvid=${bvid}&cid=${cid}&fnval=16&fourk=1`, { headers: h })).json()
+  const audios = (pu?.data?.dash?.audio ?? []).sort((a, b) => (b.bandwidth ?? 0) - (a.bandwidth ?? 0))
+  if (!audios.length) throw new Error('没有音频流（可能需要登录）')
+  const url = audios[0].baseUrl || audios[0].base_url
+  const buf = Buffer.from(await (await fetch(url, { headers: h })).arrayBuffer())
+  if (buf.length < 100000) throw new Error('音频下载太小')
+  fs.writeFileSync(audioFile, buf)
+  return audioFile
+}
+
 function durationOf(file) {
   try {
     const out = execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', file], { encoding: 'utf8' })
@@ -99,6 +120,30 @@ function planSegments(dur, sentences) {
 
 function loadState() { try { return JSON.parse(fs.readFileSync(stateFile, 'utf8')) } catch { return null } }
 function saveState(s) { fs.writeFileSync(stateFile, JSON.stringify(s, null, 1), 'utf8') }
+
+/** 一段的台词：优先 AI 字幕；没有就**听写**（faster-whisper，切片在静音中点） */
+function segmentTranscript(video, seg, sentences, outDir) {
+  const fromSubs = sentences.filter((s) => s.to > seg.from && s.from < seg.to)
+  if (fromSubs.length) {
+    return { source: 'AI 字幕', lines: fromSubs.map((s) => `[${fmt(s.from)}] ${s.text}`) }
+  }
+  // 没有字幕轨 → 抽这一段音频去听写（2026-11-18 补：以前这里就直接"只能看画面"了 ✗）
+  try {
+    const wav = path.join(outDir, `seg${String(seg.no).padStart(2, '0')}-audio.wav`)
+    const audioSrc = fs.existsSync(path.join(ROOT, bvid + '.m4a')) ? path.join(ROOT, bvid + '.m4a') : video
+    execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-ss', String(seg.from), '-to', String(seg.to), '-i', audioSrc,
+      '-vn', '-ac', '1', '-ar', '16000', wav], { stdio: 'ignore' })
+    const asr = transcribeChunked({ wav, python: ASR_PY, script: ASR_SCRIPT, model: ASR_MODEL, tmpDir: outDir })
+    const lines = (asr.segments ?? [])
+      .filter((s) => (s.text ?? '').replace(/[^一-龥a-zA-Z0-9]/g, '').length >= 2)
+      .map((s) => `[${fmt(s.start + seg.from)}] ${s.text}`)
+    try { fs.unlinkSync(wav) } catch {}
+    if (lines.length) return { source: `听写（faster-whisper，${asr.chunks ?? 1} 片）`, lines }
+  } catch (e) {
+    return { source: '无（听写失败）', lines: [], error: String(e.message).slice(0, 120) }
+  }
+  return { source: '无（这段没有语音内容）', lines: [] }
+}
 
 function subtitleTextIn(segs, a, b) {
   const lines = segs.filter((s) => s.to > a && s.from < b)
@@ -150,6 +195,7 @@ function renderSegment(video, seg, sentences) {
 try {
   const video = await ensureVideo()
   const dur = durationOf(video)
+  try { await ensureAudio() } catch (e) { console.log('（音频没下到，没字幕的段就没法听写：' + String(e.message).slice(0, 60) + '）') }
   let sentences = sentenceBounds()
   if (!sentences.length && bvid) {
     console.log('（还没有字幕，现拉一份…）')
@@ -187,15 +233,17 @@ try {
 
   console.log(`\n▶ 第 ${seg.no}/${segs.length} 段：${fmt(seg.from)}–${fmt(seg.to)}`)
   const { sheet, tokens, w: sw, h: sh } = renderSegment(video, seg, sentences)
-  const text = subtitleTextIn(sentences, seg.from, seg.to)
+  const outDirSeg = path.join(ROOT, bvid)
+  const tr = segmentTranscript(video, seg, sentences, outDirSeg)
+  const text = tr.lines.join('\n')
   console.log(`SHEET: ${sheet}`)
   console.log(`画布 ${sw}×${sh} ≈ ${tokens} token`)
   if (text) {
-    console.log('\n── 这一段说了什么 ──')
+    console.log(`\n── 这一段说了什么（${tr.source}）──`)
     console.log(text.split('\n').slice(0, 60).join('\n'))
     if (text.split('\n').length > 60) console.log(`…（还有 ${text.split('\n').length - 60} 行，下一段接着）`)
   } else {
-    console.log('（这一段没有 AI 字幕；只能看画面。想补听：`node bili.mjs hearing ' + bvid + '`）')
+    console.log(`（这一段没有可读的台词：${tr.error ?? tr.source}。画面靠 SHEET，声音细节用 \`node bili.mjs hearing ${bvid}\`）`)
   }
   if (!st.done.includes(seg.no)) st.done.push(seg.no)
   st.done.sort((a, b) => a - b)
