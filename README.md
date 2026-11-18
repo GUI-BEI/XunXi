@@ -435,3 +435,30 @@ node bili.mjs night decide --skip --think            # 下一趟叫醒我，到�
 
 MIT（见 `LICENSE`）。第三方与免责见 [`NOTICE.md`](NOTICE.md)。
 本项目是**个人自用工具的公开版**，与 B 站、DeepSeek 官方无隶属关系；用你自己的账号做事，后果自负。
+
+## 借鉴与出处（Credits）
+
+这个项目会从别的开源项目里借做法。**借了什么、借自哪里，一律记在这里** —— 以后再有借鉴也照这条规矩办。
+
+### dsh-video-storyboard（SAOS-3624，MIT）
+
+来源：<https://github.com/SAOS-3624/dsh-video-storyboard>
+
+| 借来的 | 用在哪 | 代码 |
+| --- | --- | --- |
+| 段内取最锐帧：3 个候选取 Laplacian 方差最大 | 短视频抽帧 | `tools/commands/bili-watch.mjs`（`sharpestAround`） |
+| 图像 token 按像素算（14px patch → 42px 格，每行 +1、整张 +2） | 画布预算、省 token | `bili-watch.mjs`（`imageTokens`）、`longwatch.mjs` |
+| 格子左上角烧编号（"第 5 格"） | 九宫格可寻址 | 两处 ffmpeg `drawtext` |
+| ASR 按 ≤45 秒切片、切点落静音中点 | 听写时间码不漂 | `tools/lib/asr-transcribe.mjs` |
+| 用画面硬字幕**校正**听写（三条约束：置信度 ≥0.65 / 长度 gap ≤0.5 / 相似度 ≥0.6~0.7；同长度只差 1 字不换） | 长视频听写纠错 | `tools/lib/ocr-correct.mjs` |
+| "先看台词，再决定怎么分" | 字幕驱动的取帧顺序 | `bili-watch.mjs`（`subtitleTimes`） |
+| 镜头段 / 剪辑密度决定格位 | 无字幕视频的取帧 | `bili-watch.mjs`（镜头段均匀：段多→帧多，覆盖仍是全片） |
+
+**没照抄的部分**：它的"剪辑率积分等分"在我们的测试片上会把 9 帧全塞进结尾 13 秒（前 58 秒一帧没有）✗，
+所以换成"镜头段优先"；它的 yt-dlp / cookies / 缩放取流那一套我们用不上（我们走 B站 API + 登录态）。
+
+### 规矩
+
+- 借鉴一个做法 → 在**这张表里加一行**（借了什么 / 用在哪 / 哪个文件）
+- 如果实现和原项目**不同**（改判据、换算法），把"为什么不照抄"写在同一行下面
+- 原项目是 MIT/Apache 等许可的，保留署名；不复制大段代码，只借思路与关键常量

@@ -15,6 +15,7 @@ import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { transcribeChunked } from '../lib/asr-transcribe.mjs'
+import { correctLines } from '../lib/ocr-correct.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const HOME = process.env.USERPROFILE || process.env.HOME || '.'
@@ -176,8 +177,10 @@ function renderSegment(video, seg, sentences) {
   } catch {}
   const BUDGET = Number(opt.budget ?? 640000)
   const cellW = Math.max(200, Math.min(480, Math.floor(Math.sqrt(BUDGET / (9 * (vidH / vidW))))))
+  const frameFiles = []
   times.forEach((t, i) => {
     const out = path.join(tmp, `f${String(i).padStart(2, '0')}.jpg`)
+    frameFiles.push(out)
     const label = `drawtext=fontfile='C\\:/Windows/Fonts/arialbd.ttf':text='${i + 1}':x=8:y=6:fontsize=24:fontcolor=white:box=1:boxcolor=black@0.55:boxborderw=6`
     execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-ss', Number(t).toFixed(2), '-i', video,
       '-vf', `scale=out_range=pc,${label}`, '-frames:v', '1', out], { stdio: 'ignore' })
@@ -185,11 +188,11 @@ function renderSegment(video, seg, sentences) {
   const sheet = path.join(outDir, `${bvid}-seg${String(seg.no).padStart(2, '0')}-${stamp}-3x3.jpg`)
   execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-i', path.join(tmp, 'f%02d.jpg'), '-vf',
     `scale=${cellW}:-1,tile=3x3,scale=out_range=pc`, '-frames:v', '1', sheet], { stdio: 'ignore' })
-  fs.rmSync(tmp, { recursive: true, force: true })
   const sheetW = cellW * 3
   const sheetH = Math.round(cellW * (vidH / vidW)) * 3
   const tokens = Math.ceil(Math.ceil(sheetH / 14) / 3) * (Math.ceil(Math.ceil(sheetW / 14) / 3) + 1) + 2
-  return { sheet, times, tokens, w: sheetW, h: sheetH }
+  // 临时帧先留一会儿：听写要用它们做 OCR 校正，之后调用方负责删
+  return { sheet, times, tokens, w: sheetW, h: sheetH, frames: frameFiles, tmp }
 }
 
 try {
@@ -232,9 +235,37 @@ try {
   if (!seg) { console.error(`没有第 ${target} 段（共 ${segs.length} 段）`); process.exit(2) }
 
   console.log(`\n▶ 第 ${seg.no}/${segs.length} 段：${fmt(seg.from)}–${fmt(seg.to)}`)
-  const { sheet, tokens, w: sw, h: sh } = renderSegment(video, seg, sentences)
+  const { sheet, tokens, w: sw, h: sh, frames, times, tmp: tmpFrames } = renderSegment(video, seg, sentences)
   const outDirSeg = path.join(ROOT, bvid)
   const tr = segmentTranscript(video, seg, sentences, outDirSeg)
+  // 2026-11-18：听写出来的字用**画面硬字幕**校一遍（借鉴 dsh-video-storyboard 的 ocr-subs）
+  if (tr.source.startsWith('听写') && tr.lines.length && frames?.length) {
+    try {
+      const { ocrImages, cleanOcr } = await import('../lib/ocr.mjs')
+      // 只读底部 22%：硬字幕在那里，上面的弹幕/水印不读（也更快）
+      const bands = frames.map((f, i) => {
+        const out = path.join(path.dirname(f), 'band' + String(i).padStart(2, '0') + '.jpg')
+        try {
+          execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-i', f, '-vf', 'crop=iw:ih*0.30:0:ih*0.70', '-frames:v', '1', out], { stdio: 'ignore' })
+          return out
+        } catch { return f }
+      })
+      const res = ocrImages([...frames, ...bands])
+      if (res.ok) {
+        const rows = cleanOcr(res.items, { times, extraNoise: [] })
+        const ocrLines = rows.map((r) => ({ text: String(r.text ?? ''), score: Number(r.score ?? 0) }))
+        const segObjs = tr.lines.map((l) => ({ text: l.replace(/^\[[0-9:]+\]\s*/, ''), prefix: l.replace(/^(\[[0-9:]+\]\s*).*$/, '$1') }))
+        const fix = correctLines(segObjs, ocrLines)
+        if (fix.changed) {
+          tr.lines = segObjs.map((s) => s.prefix + s.text)
+          console.log(`\n（用画面硬字幕校正了 ${fix.changed} 句）`)
+          for (const l of fix.log.slice(0, 5)) console.log('  ' + l)
+        } else if (ocrLines.length) {
+          console.log(`（画面读到 ${ocrLines.length} 行字，没有需要改的句子）`)
+        }
+      }
+    } catch (e) { console.log('（OCR 校正跳过：' + String(e.message).slice(0, 80) + '）') }
+  }
   const text = tr.lines.join('\n')
   console.log(`SHEET: ${sheet}`)
   console.log(`画布 ${sw}×${sh} ≈ ${tokens} token`)
@@ -245,6 +276,8 @@ try {
   } else {
     console.log(`（这一段没有可读的台词：${tr.error ?? tr.source}。画面靠 SHEET，声音细节用 \`node bili.mjs hearing ${bvid}\`）`)
   }
+  // 清理临时帧（OCR 校正之后才删）
+  try { fs.rmSync(tmpFrames, { recursive: true, force: true }) } catch {}
   if (!st.done.includes(seg.no)) st.done.push(seg.no)
   st.done.sort((a, b) => a - b)
   saveState(st)
