@@ -28,6 +28,7 @@ const map = {
   selftest: ['commands/selftest.mjs', '启动测试（装完先跑这个）：配置/凭据/登录态/目录/deps + 下一步两件事（未分组会话 · 完全权限）'],
   music: ['commands/music.mjs', '听歌：<BV|文件> [--force] —— 只有歌曲类才走；情绪/编制/歌词（库版 vs 听写，改词版以听写为准）'],
   hearing: ['commands/hearing.mjs', '对照：<BV|文件> [--range a-b] [--all] —— 画面 OCR vs 耳朵 ASR，只列冲突，让她自己判'],
+  longwatch: ['commands/longwatch.mjs', '长视频分段看：<BV> [--next|--seek N|--seg 300] —— 一次一段，进度存盘，下次接着'],
   audio: ['commands/audio.mjs', '听懂声音：<BV号|音视频文件> [--range a-b] [--segments 分段] [--ask 问题] —— 本地 Qwen2-Audio，说人话'],
   novel: ['commands/novel.mjs', '读书：import/split/index/toc/read/note/notes/skeleton/recall —— 切块读，笔记可回看（notes）与追加（--append）'],
   verify: ['commands/verify.mjs', '核验防编造：<BV> --text "…" | --file draft.md —— 数字/BV/@人/引文/金额对回标题简介+官方字幕+画面 OCR'],
