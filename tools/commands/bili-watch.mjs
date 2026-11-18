@@ -199,6 +199,66 @@ if (rangeArg) {
 }
 const span = rangeEnd - rangeStart
 
+// ── 2026-11-16：从 dsh-video-storyboard 借来的三件事 ──
+//   ① 图像 token 是**按像素**算的（14px patch → 42px/token 格，每行多 1 个分隔 token + 2 框架）
+//      我们的 1440×810 九宫格 = 722 token；同样内容压到 640k 像素只要 ~400 ✓
+//   ② 段内取**最锐**的一帧（3 个候选比 Laplacian 方差）—— 定点取帧可能正落在淡入/转焦的糊帧上
+//   ③ 格位按**剪辑密度**分（快切区多给帧），不是纯等间隔
+const IMAGE_CAP = 1024
+const gridCellsOf = (px) => Math.ceil(Math.floor(Math.ceil(px / 14) * 14 / 14) / 3)
+function imageTokens(w, h) {
+  const cells = (v) => Math.ceil(Math.ceil(v / 14) / 3)
+  let tokens = cells(h) * (cells(w) + 1) + 2
+  if (tokens <= IMAGE_CAP) return tokens
+  // 超预算时按长宽比缩到塞得下的最大网格（宿主同款闭式解）
+  const aspect = h / w
+  const idealW = Math.sqrt((IMAGE_CAP - 2) / aspect + 0.25) - 0.5
+  const gw = Math.max(1, Math.trunc(idealW))
+  const gh = Math.max(1, Math.trunc(idealW * aspect))
+  return gh * (gw + 1) + 2
+}
+
+const BUDGET = (() => {
+  const i = argv.indexOf('--budget')
+  const v = i >= 0 ? Number(argv[i + 1]) : Number(process.env.WATCH_BUDGET ?? 640000)
+  return Number.isFinite(v) && v > 100000 ? v : 640000
+})()
+// 每格宽：让 cols×rows 格加起来不超过预算（16:9，每格面积 = w²×9/16）
+const cellW = Math.max(240, Math.min(480, Math.floor(Math.sqrt(BUDGET / (N * 0.5625)))))
+
+const SHARP_W = 160
+const SHARP_H = 90
+function sharpnessAt(sec) {
+  try {
+    const buf = execFileSync(FFMPEG, ['-y', '-loglevel', 'error', '-ss', Number(sec).toFixed(2), '-i', mp4,
+      '-frames:v', '1', '-vf', `scale=${SHARP_W}:${SHARP_H},format=gray`, '-f', 'rawvideo', '-'],
+      { maxBuffer: 4 * 1024 * 1024 })
+    if (buf.length < SHARP_W * SHARP_H) return -1
+    let sum = 0, sum2 = 0, cnt = 0
+    for (let y = 1; y < SHARP_H - 1; y += 1) {
+      for (let x = 1; x < SHARP_W - 1; x += 1) {
+        const i = y * SHARP_W + x
+        const lap = 4 * buf[i] - buf[i - 1] - buf[i + 1] - buf[i - SHARP_W] - buf[i + SHARP_W]
+        sum += lap; sum2 += lap * lap; cnt += 1
+      }
+    }
+    const mean = sum / cnt
+    return sum2 / cnt - mean * mean
+  } catch { return -1 }
+}
+/** 在 t 附近取 3 个候选（±0.35s），挑最锐的那个 */
+function sharpestAround(sec) {
+  const cands = [sec - 0.35, sec, sec + 0.35]
+    .map((x) => Math.max(0.3, Math.min(realDur - 0.2, x)))
+  let best = sec, bestScore = -1
+  for (const c of cands) {
+    const s = sharpnessAt(c)
+    if (s > bestScore) { bestScore = s; best = c }
+  }
+  return { at: best, score: bestScore }
+}
+
+
 const uniform = Array.from({ length: N }, (_, i) => rangeStart + ((i + 0.5) * span) / N)
 // 2026-11-10：首选"字幕驱动"（要登录态）；--frames=scene 可强制回老办法
 const fMode = (() => {
@@ -220,24 +280,39 @@ if (fMode !== 'scene' && !LYRIC) {
   }
 }
 if (!usedSubs && !process.argv.includes('--uniform') && !LYRIC) {
-  // 阈值阶梯：录屏/讲解类画面变化平缓，0.3 常只检出几处 → 逐级放宽
   let st = [], used = 0.3
   for (const th of [0.3, 0.15, 0.08]) { used = th; st = sceneTimes(mp4, th).filter((t) => t >= rangeStart && t <= rangeEnd); if (st.length >= N) break }
 
   if (st.length > 0) {
-    // 关键设计（2026-10-14 踩过两次才定）：
-    //   ① 只按"变化点里均匀挑"会出事——转场全挤在开头，中段 50 秒一帧没有，叙事线直接断
-    //   ② 只按等间隔会漏掉"只闪一两秒的关键画面"
-    //   ⇒ 用**等间隔当骨架保证覆盖**，再把每帧**吸附到 ±半格内最近的变化点**（吸不到就保持等间隔）
-    const half = span / N / 2
-    let snapped = 0
-    times = uniform.map((u) => {
-      const near = st.filter((s) => Math.abs(s - u) <= half)
-      if (!near.length) return u
-      snapped += 1
-      return near.reduce((b, s) => (Math.abs(s - u) < Math.abs(b - u) ? s : b), near[0])
-    })
-    how = `等间隔骨架（保覆盖）+ 吸附画面变化点（阈值 ${used} 检出 ${st.length} 处；${snapped}/${N} 帧吸到了变化点）`
+    // 2026-11-18：改成"镜头段优先，密度自然加权"。
+    //   上一版按剪辑密度积分等分，实测把 9 帧全塞进结尾快剪区（00:58–01:11），前 58 秒一帧没有 ✗
+    //   现在：按切点切出镜头段 → 在**全片镜头段**上均匀取 N 段（每段取中点）。
+    //   快切区段多 → 自然分到更多帧；长镜头段少 → 分到少而大的帧。覆盖始终是全片 ✓
+    const cuts = [...new Set(st)].sort((a, b) => a - b).filter((c) => c > rangeStart + 0.3 && c < rangeEnd - 0.3)
+    const bounds = [rangeStart, ...cuts, rangeEnd]
+    const segs2 = []
+    for (let i = 0; i < bounds.length - 1; i += 1) {
+      const a = bounds[i], b = bounds[i + 1]
+      if (b - a > 0.15) segs2.push({ a, b, mid: (a + b) / 2 })
+    }
+    if (segs2.length >= N) {
+      times = Array.from({ length: N }, (_, i) => {
+        const idx = Math.round((i * (segs2.length - 1)) / (N - 1))
+        return segs2[idx].mid
+      })
+      how = `镜头段均匀（检出 ${cuts.length} 个切点 → ${segs2.length} 段，取 ${N} 段中点；快切区段多 → 帧也多）`
+    } else {
+      const picks = segs2.map((s) => s.mid)
+      const byLen = [...segs2].sort((x, y) => (y.b - y.a) - (x.b - x.a))
+      let k = 0
+      while (picks.length < N && byLen.length) {
+        const s = byLen[k % byLen.length]
+        picks.push(s.a + (s.b - s.a) * (0.25 + 0.5 * Math.floor(k / byLen.length)))
+        k += 1
+      }
+      times = picks.slice(0, N).sort((a, b) => a - b)
+      how = `镜头段（检出 ${cuts.length} 个切点 → 只有 ${segs2.length} 段；每段一帧 + 长段补到 ${times.length} 帧）`
+    }
   } else {
     how = `纯等间隔（阈值 0.08 也未检出变化 → 每 ${(span / N).toFixed(1)} 秒一帧）`
   }
@@ -258,14 +333,22 @@ try {
   // 每一帧单独兜底：抽不出来就先退到片尾前 1 秒，再不行用上一帧占位
   //   —— 九宫格缺一格会让人以为"这段没有画面"，比缺一张更难查 ✗
   let lastOk = null
+  let sharpPicked = 0
   times.forEach((t, i) => {
     const out = path.join(tmp, `f${String(i).padStart(2, '0')}.jpg`)
-    const tries = [t, Math.min(realDur - 1, Math.max(0.5, t)), 0.5]
+    // 2026-11-16：3 个候选里挑最锐的一帧（避开淡入/转焦的糊帧），并把实际用到的时刻记回 times
+    const pick = sharpestAround(t)
+    if (Math.abs(pick.at - t) > 0.01) sharpPicked += 1
+    times[i] = pick.at
+    // 格号烧在左上角：她就能说「第 5 格」而不是报秒数
+    const fontSize = Math.max(16, Math.round(cellW / 14))
+    const label = `drawtext=fontfile='C\\:/Windows/Fonts/arialbd.ttf':text='${i + 1}':x=8:y=6:fontsize=${fontSize}:fontcolor=white:box=1:boxcolor=black@0.55:boxborderw=6`
+    const tries = [pick.at, t, Math.min(realDur - 1, Math.max(0.5, pick.at)), 0.5]
     let ok = false
     for (const tt of tries) {
       try {
         execFileSync(FFMPEG, ['-y', '-loglevel', 'error', '-ss', Number(tt).toFixed(2), '-i', mp4,
-          '-vf', PC, '-frames:v', '1', out], { stdio: 'inherit' })
+          '-vf', `${PC},${label}`, '-frames:v', '1', out], { stdio: 'inherit' })
         if (fs.existsSync(out)) { ok = true; break }
       } catch {}
     }
@@ -276,8 +359,14 @@ try {
     } else lastOk = out
   })
   execFileSync(FFMPEG, ['-y', '-loglevel', 'error', '-i', path.join(tmp, 'f%02d.jpg'), '-vf',
-    `scale=480:-1,tile=${cols}x${rows},${PC}`, '-frames:v', '1', sheet], { stdio: 'inherit' })
+    `scale=${cellW}:-1,tile=${cols}x${rows},${PC}`, '-frames:v', '1', sheet], { stdio: 'inherit' })
   if (!fs.existsSync(sheet)) throw new Error('九宫格没生成')
+  const sheetW = cellW * cols
+  const sheetH = Math.round((cellW * 9) / 16) * rows
+  const oldTokens = imageTokens(1440, 810)
+  const newTokens = imageTokens(sheetW, sheetH)
+  console.log(`画布: ${sheetW}×${sheetH} ≈ ${newTokens} token（原来的 1440×810 是 ${oldTokens} token，省 ${Math.max(0, Math.round((1 - newTokens / oldTokens) * 100))}%）`)
+  if (sharpPicked) console.log(`糊帧规避: ${sharpPicked}/${times.length} 帧挪到了 ±0.35s 内更清晰的位置`)
   console.log(`\nSHEET: ${sheet}`)
 } catch (e) {
   console.error('ffmpeg 抽帧失败：' + e.message); process.exit(6)

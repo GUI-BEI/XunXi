@@ -12,6 +12,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { transcribeChunked } from '../lib/asr-transcribe.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const HOME = process.env.USERPROFILE || process.env.HOME || '.'
@@ -141,9 +142,8 @@ try {
   } else console.log(`库版：没找到「${q}」`)
 } catch (e) { console.log(`库版：查询失败（${String(e.message).slice(0, 60)}）`) }
 
-const asr = JSON.parse(execFileSync(ASR_PY, [ASR_SCRIPT, wav, '--model', ASR_MODEL, '--json'], {
-  encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 30 * 60 * 1000, stdio: ['ignore', 'pipe', 'pipe'],
-}))
+const asr = transcribeChunked({ wav, python: ASR_PY, script: ASR_SCRIPT, model: ASR_MODEL, tmpDir: TMP })
+if (asr.chunks > 1) console.log(`（切片转写：${asr.chunks} 片）`)
 const heard = (asr.segments ?? []).filter((s) => (s.text ?? '').replace(/[^一-龥a-zA-Z0-9]/g, '').length >= 2)
 const heardText = heard.map((s) => s.text).join(' ')
 console.log(`听写：${heard.length} 句`)

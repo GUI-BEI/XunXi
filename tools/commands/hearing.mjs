@@ -13,6 +13,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { transcribeChunked } from '../lib/asr-transcribe.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const HOME = process.env.USERPROFILE || process.env.HOME || '.'
@@ -108,15 +109,15 @@ const wav = path.join(OUT, `${bvid || 'local'}-${stamp}.wav`)
 }
 
 // ── ② 听：faster-whisper ──
-console.log('正在听（faster-whisper large-v3）…')
-const asrRaw = execFileSync(RUNTIME_PY, [ASR_SCRIPT, wav, '--model', ASR_MODEL, '--json'], {
-  encoding: 'utf8',
-  maxBuffer: 64 * 1024 * 1024,
-  timeout: 30 * 60 * 1000,
-  stdio: ['ignore', 'pipe', 'pipe'],
-})
-const asr = JSON.parse(asrRaw)
-if (asr.error) { console.error('✗ ' + asr.error); process.exit(5) }
+console.log('正在听（faster-whisper large-v3，按静音切片）…')
+let asr
+try {
+  asr = transcribeChunked({ wav, python: RUNTIME_PY, script: ASR_SCRIPT, model: ASR_MODEL, tmpDir: OUT })
+} catch (e) {
+  console.error('✗ 转写失败：' + String(e.message).slice(0, 200))
+  process.exit(5)
+}
+if (asr.chunks > 1) console.log(`  切片转写：${asr.chunks} 片（切在静音中点 → 时间码不漂）`)
 const segs = (asr.segments ?? []).filter((s) => s.text && s.text.replace(/[^一-龥a-zA-Z0-9]/g, '').length >= 2)
 console.log(`  听到 ${segs.length} 句（语言 ${asr.language}，时长 ${asr.duration}s）`)
 
