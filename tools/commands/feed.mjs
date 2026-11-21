@@ -184,6 +184,16 @@ const MIN_PLAYS = Number(opt['min-plays'] ?? FEED.minPlays ?? 10000)
 const PLAY_WEIGHT = Number(FEED.playWeight ?? 1.5)
 const MAX_DUR = Number(opt['max-dur'] ?? FEED.maxDur ?? 600)   // 秒；超长视频不进清单（深读太吃上下文）
 // 2026-11-18：短视频 / 长视频分开——长视频走 longwatch 分段看，不能混在一起当 9 格看
+// 2026-11-18：她在台账里写了"今天不想做的事" → 这里就不推了（不劝、不问理由）
+try {
+  const _life = JSON.parse((await import('node:fs')).readFileSync((process.env.USERPROFILE || '.') + '/.dsh/life.json', 'utf8'))
+  const _day = new Date().toLocaleDateString('sv-SE')
+  const _dont = (_life.date === _day ? (_life.dontWant ?? []) : []).map((d) => String(d.text ?? ''))
+  if (_dont.some((x) => /视频|刷视频|看视频/.test(x))) {
+    console.log('（你在台账里写了今天不想刷视频 → 那今天就不刷视频 ✓ 想改：node bili.mjs life dont clear）')
+    process.exit(0)
+  }
+} catch {}
 const LEN_MODE = String(opt.len ?? FEED.len ?? 'short')
 const LONG_MIN = Number(FEED.longMin ?? 600)
 const LONG_MAX = Number(FEED.longMax ?? 3600)

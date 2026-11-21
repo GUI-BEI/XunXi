@@ -28,6 +28,16 @@ import { execFileSync } from 'node:child_process'
 
 const HOME = process.env.USERPROFILE || process.env.HOME || '.'
 const ROOT = path.join(HOME, '.dsh', 'novels')
+// 2026-11-18：她在台账里写了"今天不想做的事" → 这里就不推了（不劝、不问理由）
+try {
+  const _life = JSON.parse((await import('node:fs')).readFileSync((process.env.USERPROFILE || '.') + '/.dsh/life.json', 'utf8'))
+  const _day = new Date().toLocaleDateString('sv-SE')
+  const _dont = (_life.date === _day ? (_life.dontWant ?? []) : []).map((d) => String(d.text ?? ''))
+  if (_dont.some((x) => /读书|看书|阅读/.test(x))) {
+    console.log('（你在台账里写了今天不想读书 → 那今天就不读书 ✓ 想改：node bili.mjs life dont clear）')
+    process.exit(0)
+  }
+} catch {}
 const argv = process.argv.slice(2)
 const cmd = argv[0]
 const opt = {}
