@@ -108,6 +108,16 @@ async function fetchFollowing() {
       dm: 0, play: Number(ar.stat?.play ?? 0), up: a?.name ?? '', kw: '关注' })
   }
 }
+// 2026-11-18：她在台账里写了"今天不想做的事" → 这里就不推了（不劝、不问理由）
+try {
+  const _life = JSON.parse((await import('node:fs')).readFileSync((process.env.USERPROFILE || '.') + '/.dsh/life.json', 'utf8'))
+  const _day = new Date().toLocaleDateString('sv-SE')
+  const _dont = (_life.date === _day ? (_life.dontWant ?? []) : []).map((d) => String(d.text ?? ''))
+  if (_dont.some((x) => /视频|刷视频|看视频/.test(x))) {
+    console.log('（你在台账里写了今天不想刷视频 → 那今天就不刷视频 ✓ 想改：node bili.mjs life dont clear）')
+    process.exit(0)
+  }
+} catch {}
 try { if (SOURCE_HOT === 'popular' || SOURCE_HOT === 'all') await fetchPopular() } catch { console.error('（热门源取不到，跳过）') }
 try { if (SOURCE_HOT === 'rank' || SOURCE_HOT === 'all') await fetchRank() } catch { console.error('（排行源取不到，跳过）') }
 try { if (SOURCE_HOT === 'following' || SOURCE_HOT === 'all') await fetchFollowing() } catch (e) { console.error(`（关注源取不到，跳过：${String(e.message).slice(0, 60)}）`) }
@@ -184,16 +194,6 @@ const MIN_PLAYS = Number(opt['min-plays'] ?? FEED.minPlays ?? 10000)
 const PLAY_WEIGHT = Number(FEED.playWeight ?? 1.5)
 const MAX_DUR = Number(opt['max-dur'] ?? FEED.maxDur ?? 600)   // 秒；超长视频不进清单（深读太吃上下文）
 // 2026-11-18：短视频 / 长视频分开——长视频走 longwatch 分段看，不能混在一起当 9 格看
-// 2026-11-18：她在台账里写了"今天不想做的事" → 这里就不推了（不劝、不问理由）
-try {
-  const _life = JSON.parse((await import('node:fs')).readFileSync((process.env.USERPROFILE || '.') + '/.dsh/life.json', 'utf8'))
-  const _day = new Date().toLocaleDateString('sv-SE')
-  const _dont = (_life.date === _day ? (_life.dontWant ?? []) : []).map((d) => String(d.text ?? ''))
-  if (_dont.some((x) => /视频|刷视频|看视频/.test(x))) {
-    console.log('（你在台账里写了今天不想刷视频 → 那今天就不刷视频 ✓ 想改：node bili.mjs life dont clear）')
-    process.exit(0)
-  }
-} catch {}
 const LEN_MODE = String(opt.len ?? FEED.len ?? 'short')
 const LONG_MIN = Number(FEED.longMin ?? 600)
 const LONG_MAX = Number(FEED.longMax ?? 3600)
