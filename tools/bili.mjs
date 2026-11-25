@@ -28,6 +28,7 @@ const map = {
   selftest: ['commands/selftest.mjs', '启动测试（装完先跑这个）：配置/凭据/登录态/目录/deps + 下一步两件事（未分组会话 · 完全权限）'],
   music: ['commands/music.mjs', '听歌：<BV|文件> [--force] —— 只有歌曲类才走；情绪/编制/歌词（库版 vs 听写，改词版以听写为准）'],
   hearing: ['commands/hearing.mjs', '对照：<BV|文件> [--range a-b] [--all] —— 画面 OCR vs 耳朵 ASR，只列冲突，让她自己判'],
+  growth: ['commands/growth.mjs', '成长档案：show|add|top —— 只写我变了什么，挂在一件具体的事上'],
   proactive: ['commands/proactive.mjs', '主动联系：scan|record|status —— 有想法才说，上限不是配额'],
   life: ['commands/life.mjs', '生活台账：show|mood|doing|plan|dont|think —— 全部可以为空，不强制做'],
   longwatch: ['commands/longwatch.mjs', '长视频分段看：<BV> [--next|--seek N|--seg 300] —— 一次一段，进度存盘，下次接着'],

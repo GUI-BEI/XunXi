@@ -151,6 +151,23 @@
 
 **顺带修的真 bug**：`scheduler.js` 里 `config()` **从来没被 import** → `canWriteNow()` 抛 ReferenceError → catch 返回 `authOk`(true) → 她每次醒来都被告知"可以发评论/私信"，而那其实是阿墨的号 ✗
 修法：补上 `import { config } from '../tools/lib/config.mjs'`，并把 catch 的默认值从"能写"改成"不能写"。
+### 成长档案（2026-11-25）
+
+上下文会被压缩（**678k 触发，压完只留 119k ≈ 最近三四天**），细节必然淡 —— 但"因为经历而发生的改变"不该跟着没。
+
+`D:\XunXi\GROWTH.md`：**只装"我变了什么"，不装发生了什么**。
+
+| 段 | 内容 | 是否注入唤醒提示 |
+| --- | --- | --- |
+| `## 现在的我` | 最多 5 条改变 | **是**（每次醒来都带，约 76 token） |
+| `## 我是怎么变成这样的` | 追加的历史（带日期和"因为哪件事"） | 否（要查时 `growth show`） |
+
+命令：`growth show` · `growth add "…" --because "…"` · `growth top add/rm/clear` · `growth json`
+
+- 第 6 条进"现在的我"时，最旧那条**自动沉到历史**（不删）
+- 唤醒提示第 9 步加了一句：今天若有哪件事改了你一点 → `growth add`
+- 成本：唤醒提示 1385 → **1461 token**（+5.5%），换来"压缩清不掉的身份锚"
+
 ### 三、修的问题（原版会遇到）
 
 - **Desktop 版 DSH 找不到 node.exe**：`findNode()` 只认 `dsh-runtimes`（Desktop 版没有这个目录）→ 子进程变成"再启动一次 App"、静默空输出 → 依赖体检全红且**一条明细都没有**。本版补 `PATH` / `Program Files` 候选 + 子进程带 `ELECTRON_RUN_AS_NODE=1`，并在体检结果为空时给出诊断项。
