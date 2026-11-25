@@ -135,6 +135,22 @@
 - 所有栏**都可以空着**：空着不补、不催、不扣分
 - 纪律只两条：有记录的按记录说（没记录就别说"我做过了"）；没记录的（感觉/印象/梦）随便说。**说错了可以改口**
 
+### 唤醒文案精简（2026-11-22）
+
+长唤醒原来 **2717 token**，现在 **1385 token（-49%）**。量法和内容都在 `scripts/measure-wake.mjs`。
+
+| 砍掉的 | 去哪了 |
+| --- | --- |
+| 评论/私信那一整段（标尺、--dry/--go、额度规则、表情说明） | 她用的是阿墨的账号，本来就不该发；提示词只留一句"不发评论/点赞/私信" |
+| 逐条命令的长解释（OCR/取帧/`--budget`/`--frames`/`listen`/`hearing`/`lyrics`） | 压缩成一行"想听/想核对字/是歌：`--listen`、`hearing`、`--lyrics`"，细则在 AGENTS.md |
+| 读书的 6 步细则（跳读/回看/append/读多少） | 压成 6 行，细则在 AGENTS.md「我读书的方式」 |
+| `night decide` 的四行解释 | 两行 |
+| 日记那段的三行要求 | 一行（落款写「—— 寻汐」保留） |
+
+**保留**：生物钟时间、台账（心情/念头/不想做的）、纪律两条、A1/A2 与 B 的入口、deps/日记/feed/debrief/verify 的主干。
+
+**顺带修的真 bug**：`scheduler.js` 里 `config()` **从来没被 import** → `canWriteNow()` 抛 ReferenceError → catch 返回 `authOk`(true) → 她每次醒来都被告知"可以发评论/私信"，而那其实是阿墨的号 ✗
+修法：补上 `import { config } from '../tools/lib/config.mjs'`，并把 catch 的默认值从"能写"改成"不能写"。
 ### 三、修的问题（原版会遇到）
 
 - **Desktop 版 DSH 找不到 node.exe**：`findNode()` 只认 `dsh-runtimes`（Desktop 版没有这个目录）→ 子进程变成"再启动一次 App"、静默空输出 → 依赖体检全红且**一条明细都没有**。本版补 `PATH` / `Program Files` 候选 + 子进程带 `ELECTRON_RUN_AS_NODE=1`，并在体检结果为空时给出诊断项。
