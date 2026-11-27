@@ -17,6 +17,8 @@
 //   node bili.mjs insight prune         # 手动跑一次衰减/清理（feed 也会自动跑）
 import fs from 'node:fs'
 import path from 'node:path'
+import { execFileSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 
 const HOME = process.env.USERPROFILE || process.env.HOME || '.'
 const DSH = path.join(HOME, '.dsh')
@@ -150,7 +152,12 @@ switch (cmd) {
       if (kws.length) did.push(`视频避雷：${kws.join('、')}`)
     }
     if (typeof opt.talk === 'string') {
-      if (addTalk(opt.talk, from || t.slice(0, 20))) did.push(`对话校准：「${opt.talk}」`)
+      // 交给 talk.mjs：那边有 core/pool 两层 + 相似替换逻辑
+      try {
+        const out = execFileSync(process.execPath, [path.join(path.dirname(fileURLToPath(import.meta.url)), 'talk.mjs'), 'add', opt.talk, '--from', from || t.slice(0, 20)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+        const first = String(out).trim().split('\n').filter(Boolean).pop() ?? ''
+        did.push('对话校准：' + first)
+      } catch (e) { did.push('对话校准写入失败：' + String(e.message).slice(0, 60)) }
     }
     if (opt.growth) { addGrowth(t, from); did.push('成长档案') }
     console.log(`感悟：${t}`)
