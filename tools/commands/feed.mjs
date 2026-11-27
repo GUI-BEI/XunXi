@@ -144,39 +144,35 @@ try {
   const fb = JSON.parse(fs.readFileSync(FEEDBACK, 'utf8'))
   for (const e of (fb.events ?? [])) if (e?.bv) likedBVs.add(e.bv)
 } catch {}
-  // 抽主题词：拉丁词（≥2）+ 中文 3-4 字 n-gram（更具体，避免"我为/添加"这类噪音）
-  // 为什么不比标题相似度（Jaccard）：实测"几乎改一个字"的两条标题相似度只有 0.036 ✗
-  //   主题词方案能学到"dsh""大肥鱼"这种真正跨标题复用的信号 ✓
-  const STOP_WORDS = new Set(['我为', '添加', '开屏', '广告', '这个', '那个', '什么', '自己', '可以', '就是', '一个'])
-  const ownerName = String(config().owner?.name ?? '')
-  const learnTokens = (text) => {
-    const out = new Set()
-    // ⚠️ ownerName 为空时 new RegExp('') 会在每个字之间插空格 → 必须先判断 ✗（实测踩过）
-    const base = ownerName ? String(text).replace(new RegExp(ownerName, 'g'), ' ') : String(text)
-    const t = base.replace(/@\S+/g, ' ')
-    for (const m of t.matchAll(/[A-Za-z][A-Za-z0-9]{1,}/g)) if (m[0].length >= 2) out.add(m[0].toLowerCase())
-    for (const m of t.matchAll(/[\u4e00-\u9fa5]{2,}/g)) {
-      const run = m[0]
-      for (const n of [3, 4]) for (let i = 0; i + n <= run.length; i += 1) {
-        const g = run.slice(i, i + n)
-        if (!STOP_WORDS.has(g)) out.add(g)
-      }
-    }
-    return [...out]
-  }
-  // 她自己收藏过的（favorites.json）也算"品味信号" ✓ 和"被赞过的"并列
-  let favItems = []
+  // ── 视频偏好：改读她自己整理的关键词（2026-11-28 新框架）──────────────────
+  //   旧做法是抽 3–4 字 n-gram（227 个词、99% 只出现一次 ✗ 纯噪声），已废弃。
+  //   现在只认 `insight --prefer` 写下的关键词，60 天半衰期 + 上限 30 条。
+  const PREFS_LEARNED = path.join(HOME, '.dsh', 'prefs.learned.json')
+  const HALF_LIFE_DAYS = 60
+  const MIN_WEIGHT = 0.2
+  const MAX_LEARNED = 30
+  let learned = []
   try {
-    const fj = JSON.parse(fs.readFileSync(path.join(HOME, '.bili-ai', 'favorites.json'), 'utf8'))
-    favItems = (fj.items ?? []).filter((x) => x && x.bv)
-  } catch {}
-  const learnedTokens = [...new Set([
-    ...likedEvents.flatMap((e) => learnTokens(String(e.videoTitle ?? '') + ' ' + String(e.comment ?? ''))),
-    ...favItems.flatMap((x) => learnTokens(String(x.title ?? '') + ' ' + String(x.reason ?? ''))),
-  ])]
-  const learnedHitsOf = (title) => learnedTokens.filter((tok) => title.toLowerCase().includes(tok)).length
-  // 每条命中 +2.5，最多 +7.5（不压过偏好命中的主权重 ✓）
-  const boostOf = (title) => Math.min(7.5, learnedHitsOf(title) * 2.5)
+    const raw = JSON.parse(fs.readFileSync(PREFS_LEARNED, 'utf8'))
+    const now = Date.now()
+    learned = (raw.items ?? [])
+      .map((it) => {
+        const days = Math.max(0, (now - Date.parse(it.at ?? new Date().toISOString())) / 86400000)
+        return { ...it, weight: Number((Number(it.weight ?? 1) * Math.pow(0.5, days / HALF_LIFE_DAYS)).toFixed(3)) }
+      })
+      .filter((it) => it.weight >= MIN_WEIGHT && String(it.kw ?? '').length >= 2)
+      .sort((a, b) => b.weight - a.weight)
+      .slice(0, MAX_LEARNED)
+  } catch {
+    learned = []   // 还没整理过是正常的
+  }
+  const learnedLike = learned.filter((x) => !x.dislike)
+  const learnedDislike = learned.filter((x) => x.dislike)
+  const learnedHitsOf = (title) => learnedLike.filter((it) => String(title).toLowerCase().includes(String(it.kw).toLowerCase()))
+  // 命中：每条 +2.5×权重，封顶 7.5（比"命中几个碎片"讲道理）
+  const boostOf = (title) => Math.min(7.5, learnedHitsOf(title).reduce((acc, it) => acc + 2.5 * Number(it.weight ?? 1), 0))
+  // 避雷词：每条 -3（不封顶，避雷是强信号）
+  const penaltyOf = (title) => learnedDislike.filter((it) => String(title).toLowerCase().includes(String(it.kw).toLowerCase())).length * 3
 
 // ── 偏好命中与排序（2026-10-20 重写，主人定：不要对高播放量有偏向 ✗）────────────
 //   旧：弹幕密度 + log10(播放)×3  → 大 UP 的爆款永远霸榜 ✗
@@ -235,7 +231,7 @@ const uniq = [...new Map(pool.map((x) => [x.bv, x])).values()]
     if (LEN_MODE === 'long') return d > LONG_MIN && d <= LONG_MAX
     return d <= MAX_DUR
   })
-const scoreOf = (x) => densityOf(x) * 3 + hitsOf(x).length * 4 + boostOf(x.t) + playBonus(x)
+const scoreOf = (x) => densityOf(x) * 3 + hitsOf(x).length * 4 + boostOf(x.t) + playBonus(x) - penaltyOf(x.t)
 // 2026-11-08：口味优先、播放量做次位 —— 否则 8900 万播放的"八段锦"会把她真正感兴趣的东西挤掉
 uniq.sort((a, b) => {
   const ha = hitsOf(a.t).length
@@ -274,7 +270,7 @@ const playStats = (arr) => {
 }
 console.log(`偏好（来自日记）: ${prefs.join(' · ')}`)
 console.log(`播放门槛 ${MIN_PLAYS.toLocaleString()} · 播放加成 ${PLAY_WEIGHT} · 模式：` + (LEN_MODE === 'long' ? `长视频（${Math.round(LONG_MIN / 60)}–${Math.round(LONG_MAX / 60)} 分钟，走 longwatch 分段看）` : `短视频（≤ ${Math.round(MAX_DUR / 60)} 分钟）`))
-console.log(`反馈回流: 被赞 ${likedEvents.length} 条 · 她收藏 ${favItems.length} 条 → 学会 ${learnedTokens.length} 个主题词`)
+console.log('视频偏好: ' + learnedLike.length + ' 条（她自己整理的）' + (learnedDislike.length ? ' · 避雷 ' + learnedDislike.length + ' 条' : '') + (learnedLike.length ? ' → ' + learnedLike.slice(0, 5).map((x) => x.kw).join(' / ') : '（还没有 —— 用 insight --prefer "关键词" 整理）'))
 console.log(`已看过/已评论过（已排除）: ${seen.size} 个 BV`)
 console.log(`候选池: ${pool.length} 条 → 去重去已看后 ${uniq.length} 条\n`)
 console.log(`今天可以看这几条（每词最多 ${PER} 条，共 ${N} 条）：`)
