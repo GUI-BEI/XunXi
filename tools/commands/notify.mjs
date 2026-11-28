@@ -134,6 +134,14 @@ function sendCommand(cmd) {
 }
 
 try {
+  if (type === 'qq') {
+    // 2026-11-28：CLI 没有 QQ 通道（notify_qq 是会话里的工具，不是命令行）。
+    //   这里不假装发送，而是把内容打出来并指明正确做法 —— 免得她以为发出去了。
+    console.log('（QQ 推送要走会话里的 `notify_qq` 工具 —— 命令行没有这条通道）')
+    console.log('—— 以下是没发出去的内容 ——')
+    console.log(String(text ?? ''))
+    process.exit(0)
+  }
   if (type === 'none') {
     console.log(DRY ? '[dry] 方式=none（不推送）→ 什么也不做 ✓' : '（方式=none：不推送）')
   } else if (type === 'desktop') {
