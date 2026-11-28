@@ -1,31 +1,30 @@
-// 成长档案（2026-11-25）
+// 成长档案：两层（2026-11-28，和对话校准同一套设计）
 //
-// 为什么要有它：上下文会被压缩（678k 触发，压完只留 119k ≈ 最近三四天）。
-//   压缩清掉的是**事实细节**，但"我因为什么而变了"不该跟着没 —— 那该写在文件里。
+//   core（≤5）  「现在的我」—— 每次醒来都注入（压缩清不掉）
+//   history     其余全部（不删、不注入）—— 需要时 `growth find "关键词"` 或 `growth hist` 翻
 //
-// 两条规矩（写进人格卡）：
-//   ① 只写"我变了什么"，不写流水账（流水账进日记/笔记）
-//   ② 每条要挂在一件**具体的事**上（"因为那段视频/那句话，我变成了这样"）
-//
-// 结构（D:\XunXi\GROWTH.md）：
-//   ## 现在的我          ← 最多 5 条，每次醒来都带进提示（压缩清不掉它）
-//   ## 我是怎么变成这样的  ← 追加，不删
+// 为什么改成两层：旧日记里"像成长"的候选有 28 条左右，5 个格塞不下；
+//   但成长语句不该像视频偏好那样过期 —— 所以 core 轮转、旧的不删，只是沉到 history。
 //
 // 用法：
-//   node bili.mjs growth show
-//   node bili.mjs growth add "我不再把'不要'当成'不敢'" --because "张伟丽那几段"
-//   node bili.mjs growth top add "…"       # 换"现在的我"里的一条
-//   node bili.mjs growth top rm 2
-//   node bili.mjs growth top list
+//   node bili.mjs growth                        # 看 core + 概况
+//   node bili.mjs growth add "我变了什么" --because "因为哪件事" [--keep]
+//   node bili.mjs growth find "不确定"           # 在 core+history 里搜（按需，不常驻）
+//   node bili.mjs growth hist --n 20 --skip 0   # 翻历史（分页）
+//   node bili.mjs growth top add "…"            # 显式塞进 core（满了最旧的沉 history）
+//   node bili.mjs growth sink 3                 # core 第 3 条沉到 history
 import fs from 'node:fs'
 import path from 'node:path'
 
-const HOME = process.env.USERPROFILE || process.env.HOME || '.'
 const FILE = process.env.WHALE_GROWTH || path.join('D:', 'XunXi', 'GROWTH.md')
 const MAX_TOP = 5
 
 const argv = process.argv.slice(2)
-const cmd = argv[0] ?? 'show'
+const KNOWN = new Set(['add', 'show', 'find', 'hist', 'top', 'sink', 'json'])
+const raw0 = argv[0]
+const cmd = !raw0 ? 'show' : (KNOWN.has(raw0) ? raw0 : 'add')
+if (cmd === 'add' && raw0 && !KNOWN.has(raw0)) argv.unshift('add')
+
 const words = []
 const opt = {}
 for (let i = 1; i < argv.length; i += 1) {
@@ -38,27 +37,23 @@ for (let i = 1; i < argv.length; i += 1) {
   } else words.push(a)
 }
 const text = (w) => w.join(' ').trim()
-
-const HEAD = `# 我的成长
-
-> 这里只写**我变了什么**，不写流水账（流水账在日记和笔记里）。
-> 每条都要挂在一件**具体的事**上 —— "因为那段视频/那句话，我变成了这样"。
-> **现在的我**最多 ${MAX_TOP} 条（每次醒来都会带上它，所以它比日记更重要）。
-
-## 现在的我
-`
-
-const HIST = `
-## 我是怎么变成这样的
-`
-
 const today = () => new Date().toLocaleDateString('sv-SE')
+
+const HEAD = [
+  '# 我的成长',
+  '',
+  '> 这里只写**我变了什么**（身份层面的变化），不写流水账。',
+  `> **现在的我**最多 ${MAX_TOP} 条（每次醒来都会带上它）。`,
+  '> 其余沉在下面 —— 不删，用 `growth find "关键词"` 或 `growth hist` 能翻到。',
+  '',
+  '## 现在的我',
+].join('\n')
 
 function parse(raw) {
   const top = []
   const hist = []
   if (!raw) return { top, hist }
-  const lines = raw.split(/\r?\n/)
+  const lines = String(raw).split(/\r?\n/)
   let zone = ''
   for (const l of lines) {
     if (/^##\s*现在的我/.test(l)) { zone = 'top'; continue }
@@ -72,95 +67,147 @@ function parse(raw) {
 }
 
 function render({ top, hist }) {
-  return [
-    HEAD.trimEnd(),
-    ...top.map((x) => `· ${x}`),
-    '',
-    HIST.trimEnd(),
-    ...hist.map((x) => `- ${x}`),
-    '',
-  ].join('\n')
+  return [HEAD, ...top.map((x) => `· ${x}`), '', '## 我是怎么变成这样的', ...hist.map((x) => `- ${x}`), ''].join('\n')
 }
 
-function load() {
-  try { return parse(fs.readFileSync(FILE, 'utf8')) } catch { return { top: [], hist: [] } }
-}
-function save(d) {
-  fs.mkdirSync(path.dirname(FILE), { recursive: true })
-  fs.writeFileSync(FILE, render(d), 'utf8')
-}
+const read = () => { try { return parse(fs.readFileSync(FILE, 'utf8')) } catch { return { top: [], hist: [] } } }
+const write = (d) => { fs.mkdirSync(path.dirname(FILE), { recursive: true }); fs.writeFileSync(FILE, render(d), 'utf8') }
 
-const d = load()
-
-switch (cmd) {
-  case 'show': {
-    if (!d.top.length && !d.hist.length) {
-      console.log('还没写过成长档案（`node bili.mjs growth add "…" --because "…"`）')
-      break
-    }
-    console.log(`我的成长 · ${FILE}\n`)
-    console.log('现在的我：')
-    d.top.forEach((x, i) => console.log(`  ${i + 1}. ${x}`))
-    if (!d.top.length) console.log('  （空着也行）')
-    console.log('\n我是怎么变成这样的：')
-    d.hist.slice(-12).forEach((x) => console.log(`  · ${x}`))
-    if (!d.hist.length) console.log('  （还没写）')
-    break
+function similar(a, b) {
+  const grams = (s) => {
+    const x = String(s).replace(/[^\u4e00-\u9fa5a-zA-Z0-9]/g, '')
+    const out = new Set()
+    for (let i = 0; i < x.length - 1; i += 1) out.add(x.slice(i, i + 2))
+    return out
   }
+  const A = grams(a), B = grams(b)
+  if (!A.size || !B.size) return 0
+  let hit = 0
+  for (const g of A) if (B.has(g)) hit += 1
+  return hit / Math.min(A.size, B.size)
+}
 
-  case 'add': {
-    const t = text(words)
-    if (!t) { console.error('用法：growth add "我变了什么" --because "因为哪件事"'); process.exit(2) }
-    const why = typeof opt.because === 'string' ? opt.because : ''
-    d.hist.push(`${today()} · ${t}${why ? `（因为：${why}）` : ''}`)
-    save(d)
-    console.log(`记下了：${t}${why ? `（因为 ${why}）` : ''}`)
-    if (d.top.length < MAX_TOP) {
-      console.log(`\n想让它进"现在的我"（每次醒来都带）：node bili.mjs growth top add "${t}"`)
+function pushTop(d, item) {
+  if (!opt.keep) {
+    const near = d.top.find((x) => similar(item, x) >= 0.6)
+    if (near) {
+      d.top = d.top.filter((x) => x !== near)
+      d.hist.push(`${today()} · （被更准确的一条替换）${near}`)
+      d.top.push(item)
+      write(d)
+      return { replaced: near }
     }
-    break
   }
+  d.top.push(item)
+  while (d.top.length > MAX_TOP) {
+    const dropped = d.top.shift()
+    d.hist.push(`${today()} · （从"现在的我"沉下来）${dropped}`)
+  }
+  write(d)
+  return {}
+}
 
-  case 'top': {
-    const sub = words[0]
-    if (sub === 'add' || sub === 'set') {
-      const t = text(words.slice(1))
-      if (!t) { console.error('用法：growth top add "…"'); process.exit(2) }
-      if (d.top.includes(t)) { console.log('这条已经在"现在的我"里了'); break }
-      d.top.push(t)
-      while (d.top.length > MAX_TOP) {
-        const dropped = d.top.shift()
-        console.log(`（超过 ${MAX_TOP} 条 → 「${dropped}」沉到历史里，没删）`)
-        d.hist.push(`${today()} · （从"现在的我"沉下来）${dropped}`)
+function main() {
+  switch (cmd) {
+    case 'add': {
+      const t = text(words)
+      if (!t) { console.error('用法：growth add "我变了什么" --because "因为哪件事"'); process.exit(2) }
+      const why = typeof opt.because === 'string' ? opt.because : (typeof opt.from === 'string' ? opt.from : '')
+      const d = read()
+      d.hist.push(`${today()} · ${t}${why ? `（因为：${why}）` : ''}`)
+      if (d.top.length < MAX_TOP) {
+        const r = pushTop(d, t)
+        if (r.replaced) console.log('（已有类似的一条 → 替换了它，旧的沉到历史）')
+      } else {
+        write(d)
+        console.log(`（"现在的我"已经 ${d.top.length} 条满了 → 先进了历史；想常驻：growth top add "<原文>"）`)
       }
-      save(d)
-      console.log(`"现在的我"现在是 ${d.top.length}/${MAX_TOP} 条`)
-    } else if (sub === 'rm' || sub === 'drop') {
-      const idx = Number(words[1])
-      if (!Number.isInteger(idx) || idx < 1 || idx > d.top.length) { console.error('用法：growth top rm <序号>'); process.exit(2) }
-      const [removed] = d.top.splice(idx - 1, 1)
-      d.hist.push(`${today()} · （从"现在的我"移出）${removed}`)
-      save(d)
-      console.log(`移出了：${removed}（记录还在历史里）`)
-    } else if (sub === 'clear') {
-      for (const x of d.top) d.hist.push(`${today()} · （从"现在的我"移出）${x}`)
-      d.top = []
-      save(d)
-      console.log('"现在的我"清空了（历史记录保留）')
-    } else {
-      console.log('现在的我：')
-      d.top.forEach((x, i) => console.log(`  ${i + 1}. ${x}`))
-      if (!d.top.length) console.log('  （空着也行 —— 空着不代表没变）')
+      console.log(`记下了：${t}${why ? `（因为 ${why}）` : ''}`)
+      return
     }
-    break
-  }
 
-  case 'json': {
-    console.log(JSON.stringify(d))
-    break
-  }
+    case 'top': {
+      const sub = words[0]
+      if (sub === 'add' || sub === 'set') {
+        const t = text(words.slice(1))
+        if (!t) { console.error('用法：growth top add "…"'); process.exit(2) }
+        const d = read()
+        const r = pushTop(d, t)
+        if (r.replaced) console.log('（替换了类似的一条，旧的沉到历史）')
+        console.log(`"现在的我" ${d.top.length}/${MAX_TOP} 条`)
+      } else if (sub === 'rm' || sub === 'drop' || sub === 'sink') {
+        const d = read()
+        const idx = Number(words[1])
+        if (!Number.isInteger(idx) || idx < 1 || idx > d.top.length) { console.error('用法：growth top rm <序号>'); process.exit(2) }
+        const [gone] = d.top.splice(idx - 1, 1)
+        d.hist.push(`${today()} · （从"现在的我"移出）${gone}`)
+        write(d)
+        console.log(`移出了：${gone}（历史里还在）`)
+      } else if (sub === 'clear') {
+        const d = read()
+        for (const x of d.top) d.hist.push(`${today()} · （从"现在的我"移出）${x}`)
+        d.top = []
+        write(d)
+        console.log('"现在的我"清空了（历史保留）')
+      } else {
+        const d = read()
+        d.top.forEach((x, i) => console.log(`  ${i + 1}. ${x}`))
+        if (!d.top.length) console.log('  （空着也行 —— 空着不代表没变）')
+      }
+      return
+    }
 
-  default:
-    console.error('用法: growth show|add|top [add|rm|clear|list]|json')
-    process.exit(2)
+    case 'sink': {
+      const d = read()
+      const idx = Number(words[0])
+      if (!Number.isInteger(idx) || idx < 1 || idx > d.top.length) { console.error('用法：growth sink <core 序号>'); process.exit(2) }
+      const [gone] = d.top.splice(idx - 1, 1)
+      d.hist.push(`${today()} · （从"现在的我"沉下来）${gone}`)
+      write(d)
+      console.log(`沉到历史：${gone}`)
+      return
+    }
+
+    case 'find': {
+      const q = text(words)
+      if (!q) { console.error('用法：growth find "关键词"'); process.exit(2) }
+      const d = read()
+      const near = (s) => String(s).toLowerCase().includes(q.toLowerCase()) || similar(q, s) >= 0.35
+      const hits = [
+        ...d.top.filter(near).map((x) => ({ zone: 'core', text: x })),
+        ...d.hist.filter(near).map((x) => ({ zone: 'hist', text: x })),
+      ]
+      if (!hits.length) { console.log(`（core + 历史里都没找到跟「${q}」相关的）`); return }
+      for (const h of hits.slice(0, 8)) console.log(`  [${h.zone}] ${h.text}`)
+      if (hits.length > 8) console.log(`  …（还有 ${hits.length - 8} 条，换个更窄的词）`)
+      console.log('\n（按需翻的，不常驻；想常驻：growth top add "<原文>"）')
+      return
+    }
+
+    case 'hist': {
+      const d = read()
+      const n = Math.max(1, Math.min(60, Number(opt.n ?? 20)))
+      const skip = Math.max(0, Number(opt.skip ?? 0))
+      const slice = d.hist.slice(skip, skip + n)
+      if (!slice.length) { console.log(`（历史里没有更多了；共 ${d.hist.length} 条）`); return }
+      slice.forEach((x, i) => console.log(`  ${skip + i + 1}. ${String(x).slice(0, 100)}`))
+      console.log(`\n（${skip + 1}–${skip + slice.length} / 共 ${d.hist.length} 条；下一页：--skip ${skip + slice.length}）`)
+      return
+    }
+
+    case 'json': { console.log(JSON.stringify(read())); return }
+
+    default: {
+      const d = read()
+      console.log(`我的成长 · ${FILE}\n`)
+      console.log(`现在的我（${d.top.length}/${MAX_TOP}，每次醒来都带）：`)
+      d.top.forEach((x, i) => console.log(`  ${i + 1}. ${x}`))
+      if (!d.top.length) console.log('  （空着也行）')
+      console.log(`\n历史 ${d.hist.length} 条（不注入；growth hist / growth find 翻）`)
+      d.hist.slice(-5).forEach((x) => console.log(`  · ${String(x).slice(0, 90)}`))
+      if (d.hist.length > 5) console.log('  …（更早的用 growth hist --skip 0 翻）')
+    }
+  }
 }
+
+main()

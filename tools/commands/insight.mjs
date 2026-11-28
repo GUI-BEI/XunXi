@@ -159,7 +159,13 @@ switch (cmd) {
         did.push('对话校准：' + first)
       } catch (e) { did.push('对话校准写入失败：' + String(e.message).slice(0, 60)) }
     }
-    if (opt.growth) { addGrowth(t, from); did.push('成长档案') }
+    if (opt.growth) {
+      // 交给 growth.mjs：那边有 core/history 两层 + 相似替换
+      try {
+        const out = execFileSync(process.execPath, [path.join(path.dirname(fileURLToPath(import.meta.url)), 'growth.mjs'), 'add', t, '--because', from || t.slice(0, 20)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+        did.push('成长档案：' + String(out).trim().split('\n').filter(Boolean).pop())
+      } catch (e) { did.push('成长写入失败：' + String(e.message).slice(0, 60)) }
+    }
     console.log(`感悟：${t}`)
     if (did.length) { console.log('落到：'); for (const x of did) console.log('  · ' + x) }
     else console.log('（这条只留在日记里 —— 没落到三处，也完全可以 ✓）')
